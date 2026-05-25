@@ -143,6 +143,24 @@ function formatSectionTime(totalSeconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** Resolve yt-dlp: env override → backend binary → PATH (fixes broken `./yt-dlp` on deploy). */
+function resolveYtDlp(): string {
+  const fromEnv = process.env.YTDLP_PATH?.trim();
+  if (fromEnv) return fromEnv;
+
+  const backendRoot = join(__dirname, "..");
+  const localNames = process.platform === "win32" ? ["yt-dlp.exe", "yt-dlp"] : ["yt-dlp"];
+  for (const name of localNames) {
+    const local = join(backendRoot, name);
+    if (existsSync(local)) return local;
+  }
+
+  return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+}
+
+const YTDLP_BIN = resolveYtDlp();
+const YTDLP_FORMAT = "bestaudio[ext=webm]/bestaudio/best";
+
 // ──────────────────────────────────────────────
 // API: Stream audio from YouTube (proxy via yt-dlp)
 // Optional ?t=seconds to start playback from a position
@@ -165,7 +183,16 @@ app.get("/api/stream", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Content-Type-Options", "nosniff");
 
-    const ytdlpArgs = ["-f", "bestaudio", "-o", "-", "--no-playlist", "--quiet"];
+    const ytdlpArgs = [
+      "-f",
+      YTDLP_FORMAT,
+      "-o",
+      "-",
+      "--no-playlist",
+      "--no-warnings",
+      "--no-progress",
+      "--quiet",
+    ];
 
     if (startSec > 0) {
       ytdlpArgs.push("--download-sections", `*${formatSectionTime(startSec)}-`);
@@ -173,12 +200,12 @@ app.get("/api/stream", async (req, res) => {
 
     ytdlpArgs.push(videoUrl);
 
-    const ytdlp = spawn("yt-dlp", ytdlpArgs);
+    const ytdlp = spawn(YTDLP_BIN, ytdlpArgs, { windowsHide: true });
 
-    // Pipe stdout to the HTTP response
+    let bytesSent = 0;
+
     ytdlp.stdout.pipe(res);
 
-    // Track if we logged output to keep logs clean
     ytdlp.stderr.on("data", (data) => {
       const msg = data.toString().trim();
       if (msg && !msg.includes("JavaScript runtime")) {
@@ -186,11 +213,20 @@ app.get("/api/stream", async (req, res) => {
       }
     });
 
-    // Handle startup errors
     ytdlp.on("error", (err) => {
       console.error("Failed to start yt-dlp:", err);
       if (!res.headersSent) {
-        res.status(500).json({ error: "Failed to start audio stream" });
+        res.status(500).json({ error: "Failed to start audio stream — is yt-dlp installed?" });
+      }
+    });
+
+    ytdlp.stdout.on("data", (chunk: Buffer) => {
+      bytesSent += chunk.length;
+    });
+
+    ytdlp.on("close", (code) => {
+      if (code !== 0 && code !== null && bytesSent === 0 && !res.headersSent) {
+        res.status(500).json({ error: "Audio stream failed — try another track" });
       }
     });
 
@@ -252,5 +288,6 @@ app.get("/api/lyrics", async (req, res) => {
 // ──────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Lumina Backend running on http://localhost:${PORT}`);
+  console.log(`   yt-dlp: ${YTDLP_BIN}`);
   console.log(`   Allowed origins: ${allowedOrigins.join(", ")}`);
 });

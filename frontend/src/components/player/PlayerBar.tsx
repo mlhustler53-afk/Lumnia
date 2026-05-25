@@ -78,6 +78,35 @@ export function PlayerBar({ music }: PlayerBarProps) {
   const loadedSongIdRef = useRef<string | null>(null);
   const isSeekingRef = useRef(false);
   const shouldPlayRef = useRef(false);
+  const audioUnlockedRef = useRef(false);
+
+  const tryPlay = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || !shouldPlayRef.current) return;
+    void audio.play().catch(() => setIsPlaying(false));
+  }, [setIsPlaying]);
+
+  // Unlock autoplay after the first user gesture (browsers block play() in async handlers).
+  useEffect(() => {
+    const unlock = () => {
+      const audio = audioRef.current;
+      if (!audio || audioUnlockedRef.current) return;
+      audioUnlockedRef.current = true;
+      const wasPlaying = !audio.paused;
+      const t = audio.currentTime;
+      void audio
+        .play()
+        .then(() => {
+          if (!wasPlaying) {
+            audio.pause();
+            audio.currentTime = t;
+          }
+        })
+        .catch(() => {});
+    };
+    window.addEventListener("pointerdown", unlock, { once: true, passive: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
 
   const getTotalDuration = useCallback(() => {
     const parsed = parseTimestamp(currentSong?.duration);
@@ -106,6 +135,7 @@ export function PlayerBar({ music }: PlayerBarProps) {
 
       audio.src = buildStreamUrl(currentSong.id, startSec);
       audio.load();
+      if (autoplay) tryPlay();
 
       const onReady = () => {
         if (streamGenRef.current !== gen) return;
@@ -117,15 +147,15 @@ export function PlayerBar({ music }: PlayerBarProps) {
         } else if (segmentLen && Number.isFinite(segmentLen)) {
           setTotalDuration(streamOffsetRef.current + segmentLen);
         }
-        if (shouldPlayRef.current) {
-          audio.play().catch(() => setIsPlaying(false));
-        }
+        if (shouldPlayRef.current) tryPlay();
         audio.removeEventListener("canplay", onReady);
+        audio.removeEventListener("loadeddata", onReady);
       };
 
       audio.addEventListener("canplay", onReady);
+      audio.addEventListener("loadeddata", onReady);
     },
-    [currentSong, setIsPlaying]
+    [currentSong, tryPlay]
   );
 
   // New track — start from beginning
@@ -140,7 +170,7 @@ export function PlayerBar({ music }: PlayerBarProps) {
     setDisplayTime(0);
     setSeekValue(0);
     loadStreamAt(0, isPlaying);
-  }, [currentSong?.id, currentSong?.duration, loadStreamAt]);
+  }, [currentSong?.id, currentSong?.duration, isPlaying, loadStreamAt]);
 
   // Play / pause only (do not reload stream)
   useEffect(() => {
@@ -148,16 +178,15 @@ export function PlayerBar({ music }: PlayerBarProps) {
     if (!audio || !currentSong || loadedSongIdRef.current !== currentSong.id) return;
 
     if (isPlaying) {
+      shouldPlayRef.current = true;
       if (audio.readyState >= 2) {
-        audio.play().catch((e) => console.warn("Play failed:", e));
-      } else {
-        shouldPlayRef.current = true;
+        tryPlay();
       }
     } else {
       shouldPlayRef.current = false;
       audio.pause();
     }
-  }, [isPlaying, currentSong?.id]);
+  }, [isPlaying, currentSong?.id, tryPlay]);
 
   useEffect(() => {
     if (audioRef.current) {
