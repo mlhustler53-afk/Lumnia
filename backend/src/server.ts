@@ -1,11 +1,11 @@
 import express from "express";
 import cors from "cors";
 import yts from "yt-search";
-import { spawn } from "child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import Genius from "genius-lyrics";
+import { fetchLyrics } from "./lyrics.js";
+import { buildYtdlpArgs, streamViaPiped, streamViaYtdlp } from "./stream.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LISTENING_FILE = join(__dirname, "../data/listening.json");
@@ -41,7 +41,6 @@ function saveListeningStats() {
 
 loadListeningStats();
 
-const geniusClient = new Genius.Client();
 const app = express();
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
@@ -194,76 +193,21 @@ app.get("/api/stream", async (req, res) => {
 
   try {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const ytdlpArgs = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime);
 
-    res.setHeader("Content-Type", "audio/webm");
-    res.setHeader("Transfer-Encoding", "chunked");
-    res.setHeader("Cache-Control", "no-cache, no-store");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Content-Type-Options", "nosniff");
+    let ok = await streamViaYtdlp(req, res, YTDLP_BIN, ytdlpArgs);
 
-    const ytdlpArgs = [
-      "-f",
-      YTDLP_FORMAT,
-      "-o",
-      "-",
-      "--no-playlist",
-      "--no-warnings",
-      "--no-progress",
-      "--quiet",
-    ];
-
-    if (startSec > 0) {
-      ytdlpArgs.push("--download-sections", `*${formatSectionTime(startSec)}-`);
+    if (!ok && !res.headersSent) {
+      console.warn(`[stream] yt-dlp failed for ${videoId}, trying Piped fallback`);
+      ok = await streamViaPiped(req, res, videoId);
     }
 
-    ytdlpArgs.push(videoUrl);
-
-    const ytdlp = spawn(YTDLP_BIN, ytdlpArgs, { windowsHide: true });
-
-    let bytesSent = 0;
-
-    ytdlp.stdout.pipe(res);
-
-    ytdlp.stderr.on("data", (data) => {
-      const msg = data.toString().trim();
-      if (msg && !msg.includes("JavaScript runtime")) {
-        console.warn(`[yt-dlp stderr] ${msg}`);
-      }
-    });
-
-    ytdlp.on("error", (err) => {
-      console.error("Failed to start yt-dlp:", err);
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Failed to start audio stream — is yt-dlp installed?" });
-      }
-    });
-
-    ytdlp.stdout.on("data", (chunk: Buffer) => {
-      bytesSent += chunk.length;
-    });
-
-    ytdlp.on("close", (code) => {
-      if (code !== 0 && code !== null && bytesSent === 0 && !res.headersSent) {
-        res.status(500).json({ error: "Audio stream failed — try another track" });
-      }
-    });
-
-    // Ensure we kill the child process if the client disconnects or completes
-    req.on("close", () => {
-      try {
-        ytdlp.kill("SIGTERM");
-      } catch {
-        // Already dead
-      }
-    });
-
-    res.on("error", () => {
-      try {
-        ytdlp.kill("SIGTERM");
-      } catch {
-        // Already dead
-      }
-    });
+    if (!ok && !res.headersSent) {
+      res.status(503).json({
+        error:
+          "Streaming blocked by YouTube on this server. Add YTDLP_COOKIES on Render (see backend/.env.example) or try another track.",
+      });
+    }
   } catch (error) {
     console.error("Stream initialization error:", error);
     if (!res.headersSent) {
@@ -273,7 +217,7 @@ app.get("/api/stream", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// API: Get lyrics (using genius-lyrics scraping fallback)
+// API: Get lyrics (LRCLIB — no Genius scraping)
 // ──────────────────────────────────────────────
 app.get("/api/lyrics", async (req, res) => {
   const title = req.query.title as string;
@@ -284,21 +228,8 @@ app.get("/api/lyrics", async (req, res) => {
     return;
   }
 
-  try {
-    const query = artist ? `${title} ${artist}` : title;
-    const searches = await geniusClient.songs.search(query);
-
-    if (searches.length > 0) {
-      const song = searches[0];
-      const lyricsText = await song.lyrics();
-      res.json({ lyrics: lyricsText });
-    } else {
-      res.json({ lyrics: "Lyrics not found." });
-    }
-  } catch (error) {
-    console.warn("Lyrics unavailable:", error);
-    res.json({ lyrics: "Lyrics not available right now." });
-  }
+  const lyrics = await fetchLyrics(title, artist);
+  res.json({ lyrics });
 });
 
 // ──────────────────────────────────────────────
