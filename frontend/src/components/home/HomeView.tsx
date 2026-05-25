@@ -4,11 +4,13 @@ import { Button } from "@/components/ui/button";
 import type { RecommendationSection, Song, UserPlaylist } from "@/types";
 import { SongCard } from "@/components/SongCard";
 import { PlaylistCard } from "@/components/playlists/PlaylistCard";
-import { ListenersPanel } from "@/components/ListenersPanel";
+import { ListeningTimePanel } from "@/components/ListeningTimePanel";
 import { Logo } from "@/components/Logo";
 
 interface HomeViewProps {
   userName: string;
+  sessionId: string;
+  liveListeningSeconds: number;
   sections: RecommendationSection[];
   playlists: UserPlaylist[];
   homeMix: Song[];
@@ -22,6 +24,8 @@ interface HomeViewProps {
 
 export function HomeView({
   userName,
+  sessionId,
+  liveListeningSeconds,
   sections,
   playlists,
   homeMix,
@@ -95,7 +99,11 @@ export function HomeView({
         </div>
       </section>
 
-      <ListenersPanel currentUserName={userName} />
+      <ListeningTimePanel
+        currentUserName={userName}
+        sessionId={sessionId}
+        liveSeconds={liveListeningSeconds}
+      />
 
       <section>
         <div className="mb-6 flex items-center justify-between">

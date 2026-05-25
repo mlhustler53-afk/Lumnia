@@ -17,11 +17,12 @@ export interface LuminaUser {
   name: string;
 }
 
-export interface AppListener {
+export interface ListeningStat {
   id: string;
   name: string;
-  lastSeen: number;
-  online?: boolean;
+  totalSeconds: number;
+  lastActive: number;
+  isListening?: boolean;
 }
 
 export interface RecommendationSection {

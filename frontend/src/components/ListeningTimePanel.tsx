@@ -1,35 +1,32 @@
 import { useEffect, useState, useCallback } from "react";
-import { Users, RefreshCw, Loader2 } from "lucide-react";
+import { Clock, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchListeners } from "@/lib/listeners";
-import type { AppListener } from "@/types";
+import { fetchListeningStats, formatListeningDuration } from "@/lib/listeningTime";
+import type { ListeningStat } from "@/types";
 import { cn } from "@/lib/utils";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
-interface ListenersPanelProps {
+interface ListeningTimePanelProps {
   currentUserName: string;
+  sessionId: string;
+  liveSeconds?: number;
   compact?: boolean;
 }
 
-function formatLastSeen(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-export function ListenersPanel({ currentUserName, compact }: ListenersPanelProps) {
-  const [listeners, setListeners] = useState<AppListener[]>([]);
+export function ListeningTimePanel({
+  currentUserName,
+  sessionId,
+  liveSeconds = 0,
+  compact,
+}: ListeningTimePanelProps) {
+  const [stats, setStats] = useState<ListeningStat[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setListeners(await fetchListeners(API_BASE));
+      setStats(await fetchListeningStats(API_BASE));
     } finally {
       setLoading(false);
     }
@@ -41,7 +38,11 @@ export function ListenersPanel({ currentUserName, compact }: ListenersPanelProps
     return () => clearInterval(interval);
   }, [load]);
 
-  const onlineCount = listeners.filter((l) => l.online).length;
+  const you =
+    stats.find((s) => s.id === sessionId) ??
+    stats.find((s) => s.name.toLowerCase() === currentUserName.toLowerCase());
+  const yourTotal = (you?.totalSeconds ?? 0) + liveSeconds;
+  const listeningNow = stats.filter((s) => s.isListening).length;
 
   return (
     <section
@@ -53,18 +54,18 @@ export function ListenersPanel({ currentUserName, compact }: ListenersPanelProps
       <div className="mb-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-500/20">
-            <Users className="h-5 w-5 text-violet-300" />
+            <Clock className="h-5 w-5 text-violet-300" />
           </div>
           <div>
             <h2 className={cn("font-bold tracking-tight text-white", compact ? "text-base" : "text-xl")}>
-              Who&apos;s listening
+              Listening time
             </h2>
             <p className="text-xs text-white/45">
               {loading
                 ? "Loading…"
-                : onlineCount > 0
-                  ? `${onlineCount} online · ${listeners.length} total`
-                  : `${listeners.length} ${listeners.length === 1 ? "person" : "people"} have joined`}
+                : `You've listened for ${formatListeningDuration(yourTotal)}${
+                    listeningNow > 0 ? ` · ${listeningNow} listening now` : ""
+                  }`}
             </p>
           </div>
         </div>
@@ -74,28 +75,28 @@ export function ListenersPanel({ currentUserName, compact }: ListenersPanelProps
           onClick={load}
           disabled={loading}
           className="shrink-0 text-white/40 hover:text-white"
-          title="Refresh list"
+          title="Refresh stats"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         </Button>
       </div>
 
-      {loading && listeners.length === 0 ? (
+      {loading && stats.length === 0 ? (
         <div className="flex justify-center py-8">
           <Loader2 className="h-6 w-6 animate-spin text-violet-400/50" />
         </div>
-      ) : listeners.length === 0 ? (
+      ) : stats.length === 0 ? (
         <p className="py-4 text-center text-sm text-white/40">
-          No one else yet — you&apos;re the first on Lumina!
+          Play some music — your listening time will show up here.
         </p>
       ) : (
         <ul className="flex flex-wrap gap-2">
-          {listeners.map((listener) => {
-            const isYou =
-              listener.name.toLowerCase() === currentUserName.toLowerCase();
+          {stats.map((entry) => {
+            const isYou = entry.id === sessionId;
+            const displaySeconds = isYou ? entry.totalSeconds + liveSeconds : entry.totalSeconds;
             return (
               <li
-                key={listener.id}
+                key={entry.id}
                 className={cn(
                   "flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm",
                   isYou
@@ -103,21 +104,20 @@ export function ListenersPanel({ currentUserName, compact }: ListenersPanelProps
                     : "border-white/10 bg-white/[0.04] text-white/80"
                 )}
               >
-                <span
-                  className={cn(
-                    "h-2 w-2 shrink-0 rounded-full",
-                    listener.online ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" : "bg-white/25"
-                  )}
-                  title={listener.online ? "Online now" : "Offline"}
-                />
-                <span className="font-medium">{listener.name}</span>
+                {entry.isListening && (
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]"
+                    title="Listening now"
+                  />
+                )}
+                <span className="font-medium">{entry.name}</span>
+                <span className="text-[10px] font-bold tabular-nums tracking-wider text-violet-300/90">
+                  {formatListeningDuration(displaySeconds)}
+                </span>
                 {isYou && (
                   <span className="text-[10px] font-bold uppercase tracking-wider text-violet-300/80">
                     you
                   </span>
-                )}
-                {!listener.online && (
-                  <span className="text-[10px] text-white/30">{formatLastSeen(listener.lastSeen)}</span>
                 )}
               </li>
             );

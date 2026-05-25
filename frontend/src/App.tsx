@@ -9,7 +9,7 @@ import {
   X,
   ListMusic,
   Home,
-  Users,
+  Clock,
 } from "lucide-react";
 import { Song, UserPlaylist, RecommendationSection, LuminaUser } from "./types";
 import { BGPattern } from "@/components/BGPattern";
@@ -34,14 +34,20 @@ import {
   removeSongFromPlaylist as removeSongLocal,
 } from "@/lib/localStore";
 import { fetchHomeRecommendations, buildHomeMix } from "@/lib/recommendations";
-import { registerListener } from "@/lib/listeners";
-import { ListenersPanel } from "@/components/ListenersPanel";
+import {
+  getSessionId,
+  tickListeningSecond,
+  takePendingListeningSeconds,
+  syncListeningTime,
+  getPendingListeningSeconds,
+} from "@/lib/listeningTime";
+import { ListeningTimePanel } from "@/components/ListeningTimePanel";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
-type AppView = "home" | "favorites" | "playlists" | "playlist-detail" | "listeners";
+type AppView = "home" | "favorites" | "playlists" | "playlist-detail" | "listening";
 
 function Toast({ message, onClose }: { message: string; onClose: () => void }) {
   useEffect(() => {
@@ -89,6 +95,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>("home");
   const [selectedPlaylist, setSelectedPlaylist] = useState<UserPlaylist | null>(null);
   const [createPlaylistOpen, setCreatePlaylistOpen] = useState(false);
+  const [, setListenTick] = useState(0);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -127,25 +134,40 @@ export default function App() {
     return () => window.removeEventListener("lumina-error", handler);
   }, []);
 
-  const pingListener = useCallback(async (name: string) => {
-    try {
-      await registerListener(API_BASE, name);
-    } catch {
-      // Backend may be offline — ignore
-    }
-  }, []);
+  const flushListeningTime = useCallback(async () => {
+    if (!user?.name) return;
+    const seconds = takePendingListeningSeconds();
+    if (seconds <= 0) return;
+    await syncListeningTime(API_BASE, getSessionId(), user.name, seconds);
+    setListenTick((n) => n + 1);
+  }, [user?.name]);
 
   useEffect(() => {
-    if (!user?.name) return;
-    pingListener(user.name);
-    const interval = setInterval(() => pingListener(user.name), 2 * 60 * 1000);
+    if (!isPlaying || !user) return;
+    const interval = setInterval(() => {
+      tickListeningSecond();
+      setListenTick((n) => n + 1);
+    }, 1000);
     return () => clearInterval(interval);
-  }, [user?.name, pingListener]);
+  }, [isPlaying, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    void flushListeningTime();
+    const interval = setInterval(() => void flushListeningTime(), 30_000);
+    return () => {
+      void flushListeningTime();
+    };
+  }, [user, flushListeningTime]);
+
+  useEffect(() => {
+    if (isPlaying || !user) return;
+    void flushListeningTime();
+  }, [isPlaying, user, flushListeningTime]);
 
   const handleEnterName = (name: string) => {
     setUserName(name);
     setUser({ name });
-    pingListener(name);
   };
 
   const handleChangeName = () => {
@@ -289,13 +311,13 @@ export default function App() {
       },
     },
     {
-      id: "listeners",
-      icon: <Users className="h-5 w-5" />,
-      label: "Who's listening",
+      id: "listening",
+      icon: <Clock className="h-5 w-5" />,
+      label: "Listening time",
       onClick: () => {
         setSearchResults([]);
         setSelectedPlaylist(null);
-        setActiveView("listeners");
+        setActiveView("listening");
       },
     },
   ];
@@ -436,10 +458,14 @@ export default function App() {
                   <p className="text-white/40">Like songs with the heart icon to see them here.</p>
                 )}
               </section>
-            ) : activeView === "listeners" ? (
+            ) : activeView === "listening" ? (
               <section>
-                <h2 className="mb-8 text-3xl font-bold tracking-tight">Everyone on Lumina</h2>
-                <ListenersPanel currentUserName={user.name} />
+                <h2 className="mb-8 text-3xl font-bold tracking-tight">Listening time</h2>
+                <ListeningTimePanel
+                  currentUserName={user.name}
+                  sessionId={getSessionId()}
+                  liveSeconds={getPendingListeningSeconds()}
+                />
               </section>
             ) : activeView === "playlists" ? (
               <section className="space-y-8">
@@ -486,6 +512,8 @@ export default function App() {
             ) : (
               <HomeView
                 userName={user.name}
+                sessionId={getSessionId()}
+                liveListeningSeconds={getPendingListeningSeconds()}
                 sections={recommendations}
                 playlists={playlists}
                 homeMix={homeMix}

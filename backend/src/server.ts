@@ -8,37 +8,38 @@ import { fileURLToPath } from "url";
 import Genius from "genius-lyrics";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const LISTENERS_FILE = join(__dirname, "../data/listeners.json");
+const LISTENING_FILE = join(__dirname, "../data/listening.json");
 
-interface ListenerRecord {
+interface ListeningRecord {
   id: string;
   name: string;
-  lastSeen: number;
+  totalSeconds: number;
+  lastActive: number;
 }
 
-const listeners = new Map<string, ListenerRecord>();
+const listeningStats = new Map<string, ListeningRecord>();
 
-function loadListeners() {
+function loadListeningStats() {
   try {
-    if (!existsSync(LISTENERS_FILE)) return;
-    const raw = readFileSync(LISTENERS_FILE, "utf-8");
-    const list = JSON.parse(raw) as ListenerRecord[];
-    list.forEach((entry) => listeners.set(entry.id, entry));
+    if (!existsSync(LISTENING_FILE)) return;
+    const raw = readFileSync(LISTENING_FILE, "utf-8");
+    const list = JSON.parse(raw) as ListeningRecord[];
+    list.forEach((entry) => listeningStats.set(entry.id, entry));
   } catch (err) {
-    console.warn("Could not load listeners file:", err);
+    console.warn("Could not load listening stats file:", err);
   }
 }
 
-function saveListeners() {
+function saveListeningStats() {
   try {
-    mkdirSync(dirname(LISTENERS_FILE), { recursive: true });
-    writeFileSync(LISTENERS_FILE, JSON.stringify(Array.from(listeners.values()), null, 2));
+    mkdirSync(dirname(LISTENING_FILE), { recursive: true });
+    writeFileSync(LISTENING_FILE, JSON.stringify(Array.from(listeningStats.values()), null, 2));
   } catch (err) {
-    console.warn("Could not save listeners file:", err);
+    console.warn("Could not save listening stats file:", err);
   }
 }
 
-loadListeners();
+loadListeningStats();
 
 const geniusClient = new Genius.Client();
 const app = express();
@@ -75,33 +76,42 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// API: Track who entered their name (no auth)
+// API: Listening time (accumulated while music plays)
 // ──────────────────────────────────────────────
-const ONLINE_MS = 5 * 60 * 1000;
+const LISTENING_NOW_MS = 2 * 60 * 1000;
 
-app.post("/api/listeners", (req, res) => {
-  const { id, name } = req.body as { id?: string; name?: string };
+app.post("/api/listening", (req, res) => {
+  const { id, name, seconds } = req.body as {
+    id?: string;
+    name?: string;
+    seconds?: number;
+  };
   if (!id?.trim() || !name?.trim()) {
     res.status(400).json({ error: "id and name are required" });
     return;
   }
-  const record: ListenerRecord = {
-    id: id.trim(),
+
+  const delta = Math.min(Math.max(0, Math.floor(Number(seconds) || 0)), 3600);
+  const key = id.trim();
+  const existing = listeningStats.get(key);
+  const record: ListeningRecord = {
+    id: key,
     name: name.trim().slice(0, 40),
-    lastSeen: Date.now(),
+    totalSeconds: (existing?.totalSeconds ?? 0) + delta,
+    lastActive: Date.now(),
   };
-  listeners.set(record.id, record);
-  saveListeners();
-  res.json({ ok: true });
+  listeningStats.set(key, record);
+  saveListeningStats();
+  res.json({ ok: true, totalSeconds: record.totalSeconds });
 });
 
-app.get("/api/listeners", (_req, res) => {
+app.get("/api/listening", (_req, res) => {
   const now = Date.now();
-  const list = Array.from(listeners.values())
-    .sort((a, b) => b.lastSeen - a.lastSeen)
+  const list = Array.from(listeningStats.values())
+    .sort((a, b) => b.totalSeconds - a.totalSeconds)
     .map((entry) => ({
       ...entry,
-      online: now - entry.lastSeen < ONLINE_MS,
+      isListening: now - entry.lastActive < LISTENING_NOW_MS,
     }));
   res.json(list);
 });
