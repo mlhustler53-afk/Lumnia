@@ -1,0 +1,34 @@
+export interface Song {
+  id: string;
+  title: string;
+  thumbnail: string;
+  author: string;
+  duration?: string;
+  url?: string;
+}
+
+export interface UserPlaylist {
+  id: string;
+  name: string;
+  songs: Song[];
+}
+
+export interface LuminaUser {
+  name: string;
+}
+
+export interface AppListener {
+  id: string;
+  name: string;
+  lastSeen: number;
+  online?: boolean;
+}
+
+export interface RecommendationSection {
+  id: string;
+  title: string;
+  subtitle: string;
+  query: string;
+  accent: string;
+  songs: Song[];
+}

@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Runtime listener registry (generated on server)
+backend/data/
+
+# Legacy Firebase config (not used; contains keys)
+frontend/firebase-applet-config.json
