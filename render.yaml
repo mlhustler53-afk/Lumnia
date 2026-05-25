@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: lumnia-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: FRONTEND_URL
+        value: https://lumnia-a2vb.vercel.app
+      - key: NODE_VERSION
+        value: "22"

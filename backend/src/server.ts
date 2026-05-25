@@ -44,22 +44,23 @@ const geniusClient = new Genius.Client();
 const app = express();
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
-// CORS — allow frontend origin
+// CORS — allow frontend origin(s); FRONTEND_URL can be comma-separated
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:4173",
-  process.env.FRONTEND_URL,
-].filter(Boolean) as string[];
+  "https://lumnia-a2vb.vercel.app",
+  ...(process.env.FRONTEND_URL?.split(",").map((o) => o.trim()) ?? []),
+].filter(Boolean);
+
+const corsAllowList = [...new Set(allowedOrigins)];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (curl, mobile apps, etc.)
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || corsAllowList.includes(origin)) {
         callback(null, true);
       } else {
-        console.warn(`CORS blocked origin: ${origin}`);
-        callback(null, true); // Be permissive for now
+        callback(new Error(`CORS not allowed for origin: ${origin}`));
       }
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -143,16 +144,23 @@ function formatSectionTime(totalSeconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/** Resolve yt-dlp: env override → backend binary → PATH (fixes broken `./yt-dlp` on deploy). */
+/** Resolve yt-dlp: env → backend dir (from build) → cwd → PATH. */
 function resolveYtDlp(): string {
   const fromEnv = process.env.YTDLP_PATH?.trim();
   if (fromEnv) return fromEnv;
 
-  const backendRoot = join(__dirname, "..");
-  const localNames = process.platform === "win32" ? ["yt-dlp.exe", "yt-dlp"] : ["yt-dlp"];
-  for (const name of localNames) {
-    const local = join(backendRoot, name);
-    if (existsSync(local)) return local;
+  const names = process.platform === "win32" ? ["yt-dlp.exe", "yt-dlp"] : ["yt-dlp"];
+  const searchRoots = [
+    join(__dirname, ".."),
+    process.cwd(),
+    join(process.cwd(), "backend"),
+  ];
+
+  for (const root of searchRoots) {
+    for (const name of names) {
+      const local = join(root, name);
+      if (existsSync(local)) return local;
+    }
   }
 
   return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
@@ -269,17 +277,17 @@ app.get("/api/lyrics", async (req, res) => {
   try {
     const query = artist ? `${title} ${artist}` : title;
     const searches = await geniusClient.songs.search(query);
-    
+
     if (searches.length > 0) {
       const song = searches[0];
       const lyricsText = await song.lyrics();
       res.json({ lyrics: lyricsText });
     } else {
-      res.status(404).json({ error: "Lyrics not found" });
+      res.json({ lyrics: "Lyrics not found." });
     }
   } catch (error) {
-    console.error("Lyrics route error:", error);
-    res.status(500).json({ error: "Failed to fetch lyrics" });
+    console.warn("Lyrics unavailable:", error);
+    res.json({ lyrics: "Lyrics not available right now." });
   }
 });
 
@@ -289,5 +297,8 @@ app.get("/api/lyrics", async (req, res) => {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Lumina Backend running on http://localhost:${PORT}`);
   console.log(`   yt-dlp: ${YTDLP_BIN}`);
-  console.log(`   Allowed origins: ${allowedOrigins.join(", ")}`);
+  console.log(`   Allowed origins: ${corsAllowList.join(", ")}`);
+  if (!existsSync(YTDLP_BIN)) {
+    console.warn(`   ⚠ yt-dlp not found at "${YTDLP_BIN}" — streaming will fail until build installs it`);
+  }
 });
