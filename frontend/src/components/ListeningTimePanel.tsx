@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button";
 import { fetchListeningStats, formatListeningDuration } from "@/lib/listeningTime";
 import type { ListeningStat } from "@/types";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+const API_BASE = getApiBase();
 
 interface ListeningTimePanelProps {
   currentUserName: string;

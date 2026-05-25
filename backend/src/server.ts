@@ -81,10 +81,15 @@ app.use(
 
 app.use(express.json());
 
-const FRONTEND_HOME =
-  process.env.FRONTEND_URL?.split(",")
-    .map((o) => o.trim())
-    .find(Boolean) ?? null;
+/** Public app URL for redirects — never pick localhost when multiple URLs are set. */
+function resolvePublicFrontendUrl(): string | null {
+  const urls =
+    process.env.FRONTEND_URL?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+  const publicUrl = urls.find((u) => !/localhost|127\.0\.0\.1/i.test(u));
+  return publicUrl ?? urls[0] ?? null;
+}
+
+const FRONTEND_HOME = resolvePublicFrontendUrl();
 
 // Root — browsers often open the Render URL directly (not an error if API-only)
 app.get("/", (req, res) => {
@@ -293,7 +298,11 @@ app.use((req, res) => {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Lumina Backend running on http://localhost:${PORT}`);
   console.log(`   yt-dlp: ${YTDLP_BIN}`);
+  console.log(`   Frontend redirect: ${FRONTEND_HOME ?? "(none)"}`);
   console.log(`   Allowed origins: ${corsAllowList.join(", ")}`);
+  if (FRONTEND_HOME && /localhost|127\.0\.0\.1/i.test(FRONTEND_HOME)) {
+    console.warn("   ⚠ FRONTEND_URL points at localhost — use your Vercel URL on Render");
+  }
   if (!existsSync(YTDLP_BIN)) {
     console.warn(`   ⚠ yt-dlp not found at "${YTDLP_BIN}" — streaming will fail until build installs it`);
   }

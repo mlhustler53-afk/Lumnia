@@ -16,8 +16,9 @@ import { Card } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import type { Song } from "@/types";
+import { getApiBase } from "@/lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+const API_BASE = getApiBase();
 
 function parseTimestamp(ts?: string): number {
   if (!ts) return 0;

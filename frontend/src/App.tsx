@@ -44,8 +44,9 @@ import {
 import { ListeningTimePanel } from "@/components/ListeningTimePanel";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+const API_BASE = getApiBase();
 
 type AppView = "home" | "favorites" | "playlists" | "playlist-detail" | "listening";
 
