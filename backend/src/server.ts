@@ -69,6 +69,41 @@ app.use(
 
 app.use(express.json());
 
+const FRONTEND_HOME =
+  process.env.FRONTEND_URL?.split(",")
+    .map((o) => o.trim())
+    .find(Boolean) ?? null;
+
+// Root — browsers often open the Render URL directly (not an error if API-only)
+app.get("/", (req, res) => {
+  if (FRONTEND_HOME && req.accepts("html")) {
+    res.redirect(302, FRONTEND_HOME);
+    return;
+  }
+  res.json({
+    name: "Lumina API",
+    status: "ok",
+    message: "Backend is running. Open the frontend app to use Lumina.",
+    frontend: FRONTEND_HOME,
+    health: "/api/health",
+    endpoints: "/api",
+  });
+});
+
+app.get("/api", (_req, res) => {
+  res.json({
+    search: "GET /api/search?q=",
+    stream: "GET /api/stream?id=VIDEO_ID",
+    lyrics: "GET /api/lyrics?title=&artist=",
+    listening: "GET /api/listening · POST /api/listening",
+    health: "GET /api/health",
+  });
+});
+
+app.get("/favicon.ico", (_req, res) => {
+  res.status(204).end();
+});
+
 // Health check
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
@@ -230,6 +265,14 @@ app.get("/api/lyrics", async (req, res) => {
 
   const lyrics = await fetchLyrics(title, artist);
   res.json({ lyrics });
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Not found",
+    path: req.path,
+    hint: "API routes live under /api — see GET /api for a list.",
+  });
 });
 
 // ──────────────────────────────────────────────
