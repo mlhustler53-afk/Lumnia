@@ -173,7 +173,7 @@ app.get("/api/stream", async (req, res) => {
 
     ytdlpArgs.push(videoUrl);
 
-    const ytdlp = spawn("yt-dlp", ytdlpArgs);
+    const ytdlp = spawn("./yt-dlp", ytdlpArgs);
 
     // Pipe stdout to the HTTP response
     ytdlp.stdout.pipe(res);
