@@ -5,3 +5,10 @@ dist/
 # yt-dlp binaries are downloaded per-platform during build
 yt-dlp
 yt-dlp.exe
+
+# Cookie files — NEVER commit these (contain Google session tokens)
+cookie.json
+cookies.txt
+data/cookies.txt
+data/cookies_base64.txt
+*.cookies
