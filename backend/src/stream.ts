@@ -117,48 +117,92 @@ interface PipedStreamsResponse {
   audioStreams?: PipedAudioStream[];
 }
 
-const DEFAULT_PIPED_API = "https://pipedapi.adminforge.de";
+/** Public Piped API instances (tried in order if the first fails). */
+const PIPED_API_INSTANCES = [
+  "https://pipedapi.kavin.rocks",
+  "https://pipedapi.in.projectsegfau.lt",
+  "https://pipedapi.adminforge.de",
+  "https://pipedapi.leptons.xyz",
+];
+
+function normalizePipedApiBase(raw?: string): string | null {
+  if (!raw?.trim()) return null;
+  let base = raw.trim();
+  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
+  try {
+    const url = new URL(base);
+    let path = url.pathname.replace(/\/+$/, "");
+    if (path.endsWith("/streams")) path = path.slice(0, -"/streams".length);
+    url.pathname = path || "";
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function pipedStreamsEndpoint(apiOrigin: string, videoId: string): string {
+  return new URL(`/streams/${encodeURIComponent(videoId)}`, apiOrigin).href;
+}
+
+function getPipedApiOrigins(): string[] {
+  const fromEnv = normalizePipedApiBase(process.env.PIPED_API_URL);
+  const list = fromEnv ? [fromEnv, ...PIPED_API_INSTANCES] : PIPED_API_INSTANCES;
+  return [...new Set(list)];
+}
+
+async function fetchPipedAudio(
+  apiOrigin: string,
+  videoId: string
+): Promise<PipedAudioStream | null> {
+  const metaRes = await fetch(pipedStreamsEndpoint(apiOrigin, videoId), {
+    headers: { "User-Agent": "LuminaMusic/1.0" },
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!metaRes.ok) return null;
+
+  const data = (await metaRes.json()) as PipedStreamsResponse;
+  return (
+    [...(data.audioStreams ?? [])].sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0] ??
+    null
+  );
+}
 
 export async function streamViaPiped(
   req: Request,
   res: Response,
   videoId: string
 ): Promise<boolean> {
-  const apiBase = (process.env.PIPED_API_URL || DEFAULT_PIPED_API).replace(/\/$/, "");
+  const origins = getPipedApiOrigins();
 
-  try {
-    const metaRes = await fetch(`${apiBase}/streams/${videoId}`, {
-      headers: { "User-Agent": "LuminaMusic/1.0" },
-      signal: AbortSignal.timeout(15000),
-    });
+  for (const origin of origins) {
+    try {
+      const audio = await fetchPipedAudio(origin, videoId);
+      if (!audio?.url) continue;
 
-    if (!metaRes.ok) return false;
+      const upstream = await fetch(audio.url, {
+        headers: { "User-Agent": "LuminaMusic/1.0" },
+        signal: AbortSignal.timeout(120000),
+      });
 
-    const data = (await metaRes.json()) as PipedStreamsResponse;
-    const audio = [...(data.audioStreams ?? [])].sort(
-      (a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0)
-    )[0];
+      if (!upstream.ok || !upstream.body) continue;
 
-    if (!audio?.url) return false;
+      res.setHeader("Content-Type", audio.mimeType || "audio/webm");
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Cache-Control", "no-cache, no-store");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Content-Type-Options", "nosniff");
 
-    const upstream = await fetch(audio.url, {
-      headers: { "User-Agent": "LuminaMusic/1.0" },
-      signal: AbortSignal.timeout(120000),
-    });
-
-    if (!upstream.ok || !upstream.body) return false;
-
-    res.setHeader("Content-Type", audio.mimeType || "audio/webm");
-    res.setHeader("Transfer-Encoding", "chunked");
-    res.setHeader("Cache-Control", "no-cache, no-store");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Content-Type-Options", "nosniff");
-
-    const nodeStream = Readable.fromWeb(upstream.body as import("stream/web").ReadableStream);
-    await pipeline(nodeStream, res);
-    return true;
-  } catch (err) {
-    console.warn("[piped fallback]", err);
-    return false;
+      const nodeStream = Readable.fromWeb(
+        upstream.body as import("stream/web").ReadableStream
+      );
+      await pipeline(nodeStream, res);
+      console.log(`[piped fallback] streaming via ${origin}`);
+      return true;
+    } catch (err) {
+      console.warn(`[piped fallback] ${origin} failed:`, err);
+    }
   }
+
+  return false;
 }
