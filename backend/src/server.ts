@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchLyrics } from "./lyrics.js";
-import { buildYtdlpArgs, streamViaPiped, streamViaYtdlp, validateYtdlp } from "./stream.js";
+import { buildYtdlpArgs, initStreamingInstances, streamViaCobalt, streamViaInvidious, streamViaPiped, streamViaYtdlp, validateYtdlp } from "./stream.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LISTENING_FILE = join(__dirname, "../data/listening.json");
@@ -257,17 +257,32 @@ app.get("/api/stream", async (req, res) => {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const ytdlpArgs = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime);
 
+    // Layer 1: yt-dlp (needs cookies on cloud servers)
     let ok = await streamViaYtdlp(req, res, YTDLP_BIN, ytdlpArgs);
 
+    // Layer 2: Cobalt API (very reliable, no auth needed)
     if (!ok && !res.headersSent) {
-      console.warn(`[stream] yt-dlp failed for ${videoId}, trying Piped fallback`);
+      console.warn(`[stream] yt-dlp failed for ${videoId}, trying Cobalt fallback`);
+      ok = await streamViaCobalt(req, res, videoId);
+    }
+
+    // Layer 3: Invidious API
+    if (!ok && !res.headersSent) {
+      console.warn(`[stream] Cobalt failed for ${videoId}, trying Invidious fallback`);
+      ok = await streamViaInvidious(req, res, videoId);
+    }
+
+    // Layer 4: Piped API
+    if (!ok && !res.headersSent) {
+      console.warn(`[stream] Invidious failed for ${videoId}, trying Piped fallback`);
       ok = await streamViaPiped(req, res, videoId);
     }
 
     if (!ok && !res.headersSent) {
       res.status(503).json({
         error:
-          "Streaming blocked by YouTube on this server. Add YTDLP_COOKIES on Render (see backend/.env.example) or try another track.",
+          "All streaming methods failed (yt-dlp, Cobalt, Invidious, Piped).",
+        hint: "Try setting YTDLP_COOKIES_BASE64 env var, or set COBALT_API_URL to a working Cobalt instance.",
       });
     }
   } catch (error) {
@@ -305,7 +320,7 @@ app.use((req, res) => {
 // ──────────────────────────────────────────────
 // Start server
 // ──────────────────────────────────────────────
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   console.log(`✅ Lumina Backend running on http://localhost:${PORT}`);
   console.log(`   Platform: ${process.platform} (${process.arch})`);
   console.log(`   Node: ${process.version}`);
@@ -319,10 +334,13 @@ app.listen(PORT, "0.0.0.0", () => {
     console.log(`   ✅ yt-dlp version: ${ytCheck.version}`);
   } else {
     console.error(`   ❌ yt-dlp validation FAILED: ${ytCheck.error}`);
-    console.error(`      Streaming will fall back to Piped API (may be unreliable)`);
+    console.error(`      Streaming will fall back to Cobalt → Invidious → Piped`);
   }
 
   if (FRONTEND_HOME && /localhost|127\.0\.0\.1/i.test(FRONTEND_HOME)) {
     console.warn("   ⚠ FRONTEND_URL points at localhost — use your Vercel URL on Render");
   }
+
+  // Populate dynamic instance lists in the background (non-blocking)
+  await initStreamingInstances();
 });

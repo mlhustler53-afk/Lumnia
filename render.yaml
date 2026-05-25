@@ -12,6 +12,9 @@ services:
         value: https://lumnia-a2vb.vercel.app
       - key: NODE_VERSION
         value: "22"
-      # Optional: Netscape cookies.txt for YouTube auth
-      # - key: YTDLP_COOKIES
-      #   value: /path/to/cookies.txt
+      # Optional: Cobalt API instance for reliable YouTube audio extraction
+      # - key: COBALT_API_URL
+      #   value: https://cobalt-api.kwiatekmiki.com
+      # Optional: Netscape cookies.txt for YouTube auth (base64 encoded)
+      # - key: YTDLP_COOKIES_BASE64
+      #   value: <base64-encoded-cookies.txt>

@@ -1,25 +1,65 @@
 import { spawn, execFileSync, type ChildProcess } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import type { Response, Request } from "express";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const BOT_ERROR_RE = /not a bot|LOGIN_REQUIRED|Sign in to confirm|bot detection/i;
+
+// ──────────────────────────────────────────────
+// Cookie support: decode YTDLP_COOKIES_BASE64 env var to a file at import time
+// ──────────────────────────────────────────────
+let resolvedCookiePath: string | null = null;
+
+function setupCookies(): string | null {
+  // 1. Explicit file path
+  const fromFile = process.env.YTDLP_COOKIES?.trim();
+  if (fromFile && existsSync(fromFile)) {
+    console.log(`[cookies] Using cookie file: ${fromFile}`);
+    return fromFile;
+  }
+
+  // 2. Base64-encoded cookie string → decode to a temp file
+  const fromBase64 = process.env.YTDLP_COOKIES_BASE64?.trim();
+  if (fromBase64) {
+    try {
+      const decoded = Buffer.from(fromBase64, "base64").toString("utf-8");
+      if (!decoded.includes("youtube.com") && !decoded.includes(".youtube.")) {
+        console.warn("[cookies] YTDLP_COOKIES_BASE64 decoded but doesn't look like YouTube cookies");
+      }
+      const dataDir = join(__dirname, "../data");
+      mkdirSync(dataDir, { recursive: true });
+      const cookiePath = join(dataDir, "cookies.txt");
+      writeFileSync(cookiePath, decoded, "utf-8");
+      console.log(`[cookies] Decoded YTDLP_COOKIES_BASE64 → ${cookiePath} (${decoded.length} chars)`);
+      return cookiePath;
+    } catch (err) {
+      console.error("[cookies] Failed to decode YTDLP_COOKIES_BASE64:", err);
+    }
+  }
+
+  return null;
+}
+
+resolvedCookiePath = setupCookies();
 
 /**
  * Validate that yt-dlp binary exists and runs on this platform.
  * Call at startup so Render logs show immediately if something is wrong.
  */
-export function validateYtdlp(bin: string): { ok: boolean; version?: string; error?: string } {
+export function validateYtdlp(bin: string): { ok: boolean; version?: string; error?: string; cookies: boolean } {
   try {
     const out = execFileSync(bin, ["--version"], {
       timeout: 15000,
       encoding: "utf-8",
       windowsHide: true,
     }).trim();
-    return { ok: true, version: out };
+    return { ok: true, version: out, cookies: !!resolvedCookiePath };
   } catch (err: any) {
-    return { ok: false, error: err.message ?? String(err) };
+    return { ok: false, error: err.message ?? String(err), cookies: !!resolvedCookiePath };
   }
 }
 
@@ -37,13 +77,13 @@ export function buildYtdlpArgs(
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
-    "--prefer-free-formats",   // avoid needing ffmpeg for remux
-    "--no-check-certificates", // some cloud hosts have stale CA bundles
+    "--prefer-free-formats",
+    "--no-check-certificates",
   ];
 
-  const cookies = process.env.YTDLP_COOKIES?.trim();
-  if (cookies && existsSync(cookies)) {
-    args.push("--cookies", cookies);
+  // Use cookies if available (critical for cloud deployments)
+  if (resolvedCookiePath && existsSync(resolvedCookiePath)) {
+    args.push("--cookies", resolvedCookiePath);
   }
 
   if (startSec > 0) {
@@ -135,6 +175,157 @@ export function streamViaYtdlp(
   });
 }
 
+// ──────────────────────────────────────────────
+// Fallback 1: Invidious API
+// ──────────────────────────────────────────────
+interface InvidiousAdaptiveFormat {
+  url?: string;
+  type?: string;
+  bitrate?: string;
+  encoding?: string;
+  container?: string;
+}
+
+interface InvidiousVideoResponse {
+  adaptiveFormats?: InvidiousAdaptiveFormat[];
+}
+
+// Updated with currently working instances (May 2026)
+const INVIDIOUS_INSTANCES_HARDCODED = [
+  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://invidious.jing.rocks",
+  "https://iv.nbocloud.com",
+  "https://invidious.privacyredirect.com",
+  "https://invidious.perennialte.ch",
+  "https://invidious.materialio.us",
+  "https://yt.drgnz.club",
+  "https://invidious.protokolla.fi",
+];
+
+// Dynamic instance list — populated at startup from the official registry
+let dynamicInvidiousInstances: string[] = [];
+
+/**
+ * Fetch the current list of healthy Invidious instances from the official API.
+ * Called once at startup; results are cached in-memory.
+ */
+export async function refreshInvidiousInstances(): Promise<void> {
+  try {
+    const res = await fetch("https://api.invidious.io/instances.json?sort_by=type,health", {
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as [string, { type: string; uri: string; stats?: { playback?: { ratio?: number } }; monitor?: { uptime_30d?: number } }][];
+    dynamicInvidiousInstances = data
+      .filter(([, info]) => {
+        if (info.type !== "https") return false;
+        // Prefer instances with some playback success
+        const ratio = info.stats?.playback?.ratio ?? -1;
+        const uptime = info.monitor?.uptime_30d ?? 0;
+        return uptime > 90 || ratio > 0;
+      })
+      .map(([, info]) => info.uri)
+      .slice(0, 10);
+    console.log(`[invidious] Fetched ${dynamicInvidiousInstances.length} healthy instances from registry`);
+  } catch (err) {
+    console.warn("[invidious] Could not fetch instance list:", (err as Error).message ?? err);
+  }
+}
+
+function getInvidiousOrigins(): string[] {
+  const fromEnv = process.env.INVIDIOUS_API_URL?.trim();
+  const all = [
+    ...(fromEnv ? [fromEnv] : []),
+    ...dynamicInvidiousInstances,
+    ...INVIDIOUS_INSTANCES_HARDCODED,
+  ];
+  return [...new Set(all)];
+}
+
+async function fetchInvidiousAudio(
+  apiOrigin: string,
+  videoId: string
+): Promise<{ url: string; mimeType: string } | null> {
+  try {
+    const endpoint = `${apiOrigin}/api/v1/videos/${encodeURIComponent(videoId)}?fields=adaptiveFormats`;
+    const res = await fetch(endpoint, {
+      headers: { "User-Agent": "LuminaMusic/1.0" },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return null;
+
+    const text = await res.text();
+    let data: InvidiousVideoResponse;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      console.warn(`[invidious] ${apiOrigin} returned non-JSON: ${text.slice(0, 80)}`);
+      return null;
+    }
+
+    const audioFormats = (data.adaptiveFormats ?? []).filter(
+      (f) => f.type?.startsWith("audio/") && f.url
+    );
+    if (!audioFormats.length) return null;
+
+    // Prefer opus/webm, then m4a
+    const preferred =
+      audioFormats.find((f) => f.container === "webm" || f.type?.includes("opus")) ??
+      audioFormats[0];
+
+    return {
+      url: preferred.url!,
+      mimeType: preferred.type?.split(";")[0] ?? "audio/webm",
+    };
+  } catch (err) {
+    console.warn(`[invidious] ${apiOrigin} failed:`, (err as Error).message ?? err);
+    return null;
+  }
+}
+
+export async function streamViaInvidious(
+  req: Request,
+  res: Response,
+  videoId: string
+): Promise<boolean> {
+  const origins = getInvidiousOrigins();
+
+  for (const origin of origins) {
+    try {
+      const audio = await fetchInvidiousAudio(origin, videoId);
+      if (!audio?.url) continue;
+
+      const upstream = await fetch(audio.url, {
+        headers: { "User-Agent": "LuminaMusic/1.0" },
+        signal: AbortSignal.timeout(120000),
+      });
+
+      if (!upstream.ok || !upstream.body) continue;
+
+      res.setHeader("Content-Type", audio.mimeType);
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Cache-Control", "no-cache, no-store");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+
+      const nodeStream = Readable.fromWeb(
+        upstream.body as import("stream/web").ReadableStream
+      );
+      await pipeline(nodeStream, res);
+      console.log(`[invidious fallback] streaming via ${origin}`);
+      return true;
+    } catch (err) {
+      console.warn(`[invidious fallback] ${origin} failed:`, (err as Error).message ?? err);
+    }
+  }
+
+  return false;
+}
+
+// ──────────────────────────────────────────────
+// Fallback 2: Piped API
+// ──────────────────────────────────────────────
 interface PipedAudioStream {
   url: string;
   mimeType?: string;
@@ -145,14 +336,39 @@ interface PipedStreamsResponse {
   audioStreams?: PipedAudioStream[];
 }
 
-/** Public Piped API instances (tried in order if the first fails). */
-const PIPED_API_INSTANCES = [
+// Updated with currently working instances (May 2026)
+const PIPED_API_INSTANCES_HARDCODED = [
+  "https://api.piped.private.coffee",
   "https://pipedapi.kavin.rocks",
-  "https://pipedapi.in.projectsegfau.lt",
-  "https://pipedapi.adminforge.de",
   "https://pipedapi.leptons.xyz",
-  "https://watchapi.whatever.social",
 ];
+
+// Dynamic instance list — populated at startup from the official registry
+let dynamicPipedInstances: string[] = [];
+
+/**
+ * Fetch the current list of healthy Piped API instances from the official registry.
+ * Called once at startup; results are cached in-memory.
+ */
+export async function refreshPipedInstances(): Promise<void> {
+  try {
+    const res = await fetch("https://piped-instances.kavin.rocks/", {
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as { name: string; api_url: string; uptime_24h?: number; uptime_30d?: number }[];
+    dynamicPipedInstances = data
+      .filter((inst) => {
+        const uptime = inst.uptime_24h ?? inst.uptime_30d ?? 0;
+        return uptime > 80 && inst.api_url;
+      })
+      .map((inst) => inst.api_url.replace(/\/+$/, ""))
+      .slice(0, 8);
+    console.log(`[piped] Fetched ${dynamicPipedInstances.length} healthy instances from registry`);
+  } catch (err) {
+    console.warn("[piped] Could not fetch instance list:", (err as Error).message ?? err);
+  }
+}
 
 function normalizePipedApiBase(raw?: string): string | null {
   if (!raw?.trim()) return null;
@@ -162,35 +378,48 @@ function normalizePipedApiBase(raw?: string): string | null {
     const url = new URL(base);
     let path = url.pathname.replace(/\/+$/, "");
     if (path.endsWith("/streams")) path = path.slice(0, -"/streams".length);
-    url.pathname = path || "";
+    url.pathname = path || "/";
     return url.origin;
   } catch {
     return null;
   }
 }
 
-function pipedStreamsEndpoint(apiOrigin: string, videoId: string): string {
-  return new URL(`/streams/${encodeURIComponent(videoId)}`, apiOrigin).href;
-}
-
 function getPipedApiOrigins(): string[] {
   const fromEnv = normalizePipedApiBase(process.env.PIPED_API_URL);
-  const list = fromEnv ? [fromEnv, ...PIPED_API_INSTANCES] : PIPED_API_INSTANCES;
-  return [...new Set(list)];
+  const all = [
+    ...(fromEnv ? [fromEnv] : []),
+    ...dynamicPipedInstances,
+    ...PIPED_API_INSTANCES_HARDCODED,
+  ];
+  return [...new Set(all)];
 }
 
 async function fetchPipedAudio(
   apiOrigin: string,
   videoId: string
 ): Promise<PipedAudioStream | null> {
-  const metaRes = await fetch(pipedStreamsEndpoint(apiOrigin, videoId), {
+  // Build URL safely — ensure no hostname concatenation bug
+  const cleanOrigin = apiOrigin.replace(/\/+$/, "");
+  const endpoint = `${cleanOrigin}/streams/${encodeURIComponent(videoId)}`;
+
+  const metaRes = await fetch(endpoint, {
     headers: { "User-Agent": "LuminaMusic/1.0" },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(12000),
   });
 
   if (!metaRes.ok) return null;
 
-  const data = (await metaRes.json()) as PipedStreamsResponse;
+  // Guard against non-JSON responses (e.g. "Service has been shut down")
+  const text = await metaRes.text();
+  let data: PipedStreamsResponse;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.warn(`[piped] ${apiOrigin} returned non-JSON: ${text.slice(0, 80)}`);
+    return null;
+  }
+
   return (
     [...(data.audioStreams ?? [])].sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0] ??
     null
@@ -229,9 +458,117 @@ export async function streamViaPiped(
       console.log(`[piped fallback] streaming via ${origin}`);
       return true;
     } catch (err) {
-      console.warn(`[piped fallback] ${origin} failed:`, err);
+      console.warn(`[piped fallback] ${origin} failed:`, (err as Error).message ?? err);
     }
   }
 
   return false;
+}
+
+// ──────────────────────────────────────────────
+// Fallback 3: Cobalt API (very reliable YouTube audio extractor)
+// ──────────────────────────────────────────────
+const COBALT_API_INSTANCES = [
+  "https://cobalt-api.kwiatekmiki.com",
+  "https://cobalt.api.timelessnesses.me",
+  "https://cobalt-api.ayo.tf",
+];
+
+function getCobaltApiOrigins(): string[] {
+  const fromEnv = process.env.COBALT_API_URL?.trim();
+  const all = fromEnv ? [fromEnv, ...COBALT_API_INSTANCES] : COBALT_API_INSTANCES;
+  return [...new Set(all)];
+}
+
+interface CobaltResponse {
+  status: string;
+  url?: string;
+  audio?: string;
+}
+
+export async function streamViaCobalt(
+  req: Request,
+  res: Response,
+  videoId: string
+): Promise<boolean> {
+  const origins = getCobaltApiOrigins();
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+  for (const origin of origins) {
+    try {
+      const endpoint = `${origin.replace(/\/+$/, "")}`;
+      const metaRes = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "User-Agent": "LuminaMusic/1.0",
+        },
+        body: JSON.stringify({
+          url: videoUrl,
+          downloadMode: "audio",
+          audioFormat: "opus",
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!metaRes.ok) {
+        console.warn(`[cobalt] ${origin} returned HTTP ${metaRes.status}`);
+        continue;
+      }
+
+      const text = await metaRes.text();
+      let data: CobaltResponse;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        console.warn(`[cobalt] ${origin} returned non-JSON: ${text.slice(0, 80)}`);
+        continue;
+      }
+
+      const audioUrl = data.url || data.audio;
+      if (!audioUrl) {
+        console.warn(`[cobalt] ${origin} returned no audio URL, status: ${data.status}`);
+        continue;
+      }
+
+      // Stream the audio
+      const upstream = await fetch(audioUrl, {
+        headers: { "User-Agent": "LuminaMusic/1.0" },
+        signal: AbortSignal.timeout(120000),
+      });
+
+      if (!upstream.ok || !upstream.body) continue;
+
+      const contentType = upstream.headers.get("content-type") || "audio/ogg";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Cache-Control", "no-cache, no-store");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+
+      const nodeStream = Readable.fromWeb(
+        upstream.body as import("stream/web").ReadableStream
+      );
+      await pipeline(nodeStream, res);
+      console.log(`[cobalt fallback] streaming via ${origin}`);
+      return true;
+    } catch (err) {
+      console.warn(`[cobalt fallback] ${origin} failed:`, (err as Error).message ?? err);
+    }
+  }
+
+  return false;
+}
+
+// ──────────────────────────────────────────────
+// Initialize dynamic instance lists at startup
+// ──────────────────────────────────────────────
+export async function initStreamingInstances(): Promise<void> {
+  console.log("[stream] Fetching live instance lists from registries...");
+  await Promise.allSettled([
+    refreshInvidiousInstances(),
+    refreshPipedInstances(),
+  ]);
+  console.log("[stream] Instance discovery complete");
 }
