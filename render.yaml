@@ -10,3 +10,4 @@ services:
         value: https://lumnia-a2vb.vercel.app
       - key: NODE_VERSION
         value: "22"
+      # Do not set PIPED_API_URL unless you know the exact origin (no /streams suffix)

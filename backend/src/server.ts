@@ -54,10 +54,22 @@ const allowedOrigins = [
 
 const corsAllowList = [...new Set(allowedOrigins)];
 
+function isAllowedCorsOrigin(origin: string): boolean {
+  if (corsAllowList.includes(origin)) return true;
+  // Vercel production + preview deployments
+  try {
+    const { hostname } = new URL(origin);
+    if (hostname.endsWith(".vercel.app")) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || corsAllowList.includes(origin)) {
+      if (!origin || isAllowedCorsOrigin(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`CORS not allowed for origin: ${origin}`));
