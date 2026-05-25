@@ -50,6 +50,17 @@ export function WelcomeScreen({ onEnter }: WelcomeScreenProps) {
             Start listening
           </Button>
         </form>
+        <div className="mt-8 text-xs text-white/40">
+          Developed by{" "}
+          <a
+            href="https://github.com/NayanGhimire"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-violet-400 transition-colors hover:text-violet-300 hover:underline"
+          >
+            Nayan Ghimire
+          </a>
+        </div>
       </motion.div>
     </div>
   );

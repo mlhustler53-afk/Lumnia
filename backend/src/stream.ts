@@ -1,10 +1,27 @@
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, execFileSync, type ChildProcess } from "child_process";
 import { existsSync } from "fs";
 import type { Response, Request } from "express";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
-const BOT_ERROR_RE = /not a bot|LOGIN_REQUIRED|Sign in to confirm/i;
+const BOT_ERROR_RE = /not a bot|LOGIN_REQUIRED|Sign in to confirm|bot detection/i;
+
+/**
+ * Validate that yt-dlp binary exists and runs on this platform.
+ * Call at startup so Render logs show immediately if something is wrong.
+ */
+export function validateYtdlp(bin: string): { ok: boolean; version?: string; error?: string } {
+  try {
+    const out = execFileSync(bin, ["--version"], {
+      timeout: 15000,
+      encoding: "utf-8",
+      windowsHide: true,
+    }).trim();
+    return { ok: true, version: out };
+  } catch (err: any) {
+    return { ok: false, error: err.message ?? String(err) };
+  }
+}
 
 export function buildYtdlpArgs(
   videoUrl: string,
@@ -20,10 +37,8 @@ export function buildYtdlpArgs(
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
-    "--extractor-args",
-    "youtube:player_client=android_sdkless,web_embedded,tv_embedded",
-    "--remote-components",
-    "ejs:github",
+    "--prefer-free-formats",   // avoid needing ffmpeg for remux
+    "--no-check-certificates", // some cloud hosts have stale CA bundles
   ];
 
   const cookies = process.env.YTDLP_COOKIES?.trim();
@@ -48,7 +63,16 @@ export function streamViaYtdlp(
   return new Promise((resolve) => {
     let bytesSent = 0;
     let settled = false;
-    let proc: ChildProcess | null = spawn(ytdlpBin, args, { windowsHide: true });
+    let stderrLog = "";
+    let proc: ChildProcess | null = null;
+
+    try {
+      proc = spawn(ytdlpBin, args, { windowsHide: true });
+    } catch (err) {
+      console.error("[yt-dlp] Failed to spawn:", err);
+      resolve(false);
+      return;
+    }
 
     const finish = (ok: boolean) => {
       if (settled) return;
@@ -64,13 +88,15 @@ export function streamViaYtdlp(
       }
     };
 
-    proc.on("error", () => {
+    proc.on("error", (err) => {
+      console.error("[yt-dlp] Process error:", err.message);
       kill();
       finish(false);
     });
 
     proc.stderr?.on("data", (data) => {
       const msg = data.toString();
+      stderrLog += msg;
       if (BOT_ERROR_RE.test(msg)) {
         kill();
         finish(false);
@@ -96,10 +122,12 @@ export function streamViaYtdlp(
         if (!res.writableEnded) res.end();
         finish(true);
       } else {
+        if (stderrLog.trim()) {
+          console.error(`[yt-dlp] Exited code=${code}, 0 bytes sent. stderr:\n${stderrLog.trim()}`);
+        }
         kill();
         finish(false);
       }
-      void code;
     });
 
     req.on("close", kill);
@@ -123,6 +151,7 @@ const PIPED_API_INSTANCES = [
   "https://pipedapi.in.projectsegfau.lt",
   "https://pipedapi.adminforge.de",
   "https://pipedapi.leptons.xyz",
+  "https://watchapi.whatever.social",
 ];
 
 function normalizePipedApiBase(raw?: string): string | null {

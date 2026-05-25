@@ -10,6 +10,7 @@ import {
   ListMusic,
   Home,
   Clock,
+  Github,
 } from "lucide-react";
 import { Song, UserPlaylist, RecommendationSection, LuminaUser } from "./types";
 import { BGPattern } from "@/components/BGPattern";
@@ -380,6 +381,15 @@ export default function App() {
               </button>
             ))}
           </nav>
+          <a
+            href="https://github.com/NayanGhimire"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Developed by Nayan Ghimire"
+            className="text-white/40 transition-colors hover:text-violet-400"
+          >
+            <Github className="h-5 w-5" />
+          </a>
           <button
             onClick={handleChangeName}
             title={`Signed in as ${user.name} — click to change name`}

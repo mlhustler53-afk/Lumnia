@@ -3,11 +3,15 @@ services:
     name: lumnia-backend
     runtime: node
     rootDir: backend
-    buildCommand: npm install && npm run build
+    buildCommand: |
+      apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null 2>&1 || true
+      npm install && npm run build
     startCommand: npm start
     envVars:
       - key: FRONTEND_URL
         value: https://lumnia-a2vb.vercel.app
       - key: NODE_VERSION
         value: "22"
-      # Do not set PIPED_API_URL unless you know the exact origin (no /streams suffix)
+      # Optional: Netscape cookies.txt for YouTube auth
+      # - key: YTDLP_COOKIES
+      #   value: /path/to/cookies.txt

@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchLyrics } from "./lyrics.js";
-import { buildYtdlpArgs, streamViaPiped, streamViaYtdlp } from "./stream.js";
+import { buildYtdlpArgs, streamViaPiped, streamViaYtdlp, validateYtdlp } from "./stream.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LISTENING_FILE = join(__dirname, "../data/listening.json");
@@ -121,9 +121,18 @@ app.get("/favicon.ico", (_req, res) => {
   res.status(204).end();
 });
 
-// Health check
+// Health check with diagnostics
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: Date.now() });
+  const ytdlpStatus = validateYtdlp(YTDLP_BIN);
+  res.json({
+    status: "ok",
+    timestamp: Date.now(),
+    platform: process.platform,
+    ytdlp: {
+      bin: YTDLP_BIN,
+      ...ytdlpStatus,
+    },
+  });
 });
 
 // ──────────────────────────────────────────────
@@ -228,7 +237,8 @@ function resolveYtDlp(): string {
 }
 
 const YTDLP_BIN = resolveYtDlp();
-const YTDLP_FORMAT = "bestaudio[ext=webm]/bestaudio/best";
+// Prefer formats that don't require ffmpeg post-processing
+const YTDLP_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best";
 
 // ──────────────────────────────────────────────
 // API: Stream audio from YouTube (proxy via yt-dlp)
@@ -297,13 +307,22 @@ app.use((req, res) => {
 // ──────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Lumina Backend running on http://localhost:${PORT}`);
+  console.log(`   Platform: ${process.platform} (${process.arch})`);
+  console.log(`   Node: ${process.version}`);
   console.log(`   yt-dlp: ${YTDLP_BIN}`);
   console.log(`   Frontend redirect: ${FRONTEND_HOME ?? "(none)"}`);
   console.log(`   Allowed origins: ${corsAllowList.join(", ")}`);
+
+  // Validate yt-dlp at startup
+  const ytCheck = validateYtdlp(YTDLP_BIN);
+  if (ytCheck.ok) {
+    console.log(`   ✅ yt-dlp version: ${ytCheck.version}`);
+  } else {
+    console.error(`   ❌ yt-dlp validation FAILED: ${ytCheck.error}`);
+    console.error(`      Streaming will fall back to Piped API (may be unreliable)`);
+  }
+
   if (FRONTEND_HOME && /localhost|127\.0\.0\.1/i.test(FRONTEND_HOME)) {
     console.warn("   ⚠ FRONTEND_URL points at localhost — use your Vercel URL on Render");
-  }
-  if (!existsSync(YTDLP_BIN)) {
-    console.warn(`   ⚠ yt-dlp not found at "${YTDLP_BIN}" — streaming will fail until build installs it`);
   }
 });
