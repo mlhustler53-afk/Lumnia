@@ -6,11 +6,20 @@ import type { Request, Response } from "express";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { getCachedStreamUrl, setCachedStreamUrl } from "./streamCache.js";
+import {
+  acquireYtdlpSlot,
+  dedupeUrlExtraction,
+  releaseStreamSlot,
+  tryAcquireStreamSlot,
+} from "./concurrency.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_YT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 const YT_USER_AGENT = process.env.YT_USER_AGENT?.trim() || DEFAULT_YT_USER_AGENT;
+
+/** stdout from yt-dlp -g is a single URL line; keep buffer tiny. */
+const YTDLP_MAX_BUFFER = 256 * 1024;
 
 let resolvedCookiePath: string | null = null;
 
@@ -53,6 +62,7 @@ export function validateYtdlp(
       {
         timeout: 45000,
         windowsHide: true,
+        maxBuffer: 4096,
       },
       (err, stdout) => {
         if (err) {
@@ -68,6 +78,7 @@ export function validateYtdlp(
 export async function autoUpdateYtdlp(dest: string): Promise<void> {
   if (process.platform === "win32") return;
   if (process.env.SKIP_YTDLP_UPDATE === "1") return;
+  if (process.env.LOW_MEMORY === "1") return;
 
   const YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
   try {
@@ -80,7 +91,7 @@ export async function autoUpdateYtdlp(dest: string): Promise<void> {
     const { createWriteStream, chmodSync, renameSync } = await import("fs");
     const tempDest = `${dest}.tmp`;
     const fileStream = createWriteStream(tempDest);
-    const nodeStream = Readable.fromWeb(res.body as any);
+    const nodeStream = Readable.fromWeb(res.body as import("stream/web").ReadableStream);
     await pipeline(nodeStream, fileStream);
     chmodSync(tempDest, 0o755);
     renameSync(tempDest, dest);
@@ -108,18 +119,19 @@ export function buildYtdlpArgs(videoUrl: string): string[] {
 
 function resolveYtdlpAudioUrl(ytdlpBin: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       ytdlpBin,
       args,
       {
         timeout: 60000,
         windowsHide: true,
-        maxBuffer: 1024 * 1024,
+        maxBuffer: YTDLP_MAX_BUFFER,
+        killSignal: "SIGKILL",
       },
       (err, stdout, stderr) => {
         if (err) {
           const detail = stderr?.trim() || err.message;
-          console.error("[yt-dlp] URL extraction failed:", detail);
+          console.error("[yt-dlp] URL extraction failed:", detail.slice(0, 200));
           resolve(null);
           return;
         }
@@ -132,7 +144,27 @@ function resolveYtdlpAudioUrl(ytdlpBin: string, args: string[]): Promise<string 
         resolve(firstUrl ?? null);
       }
     );
+
+    child.on("error", () => resolve(null));
   });
+}
+
+async function getMediaUrl(
+  ytdlpBin: string,
+  args: string[],
+  videoId: string
+): Promise<string | null> {
+  const cached = getCachedStreamUrl(videoId);
+  if (cached) return cached;
+
+  const release = await acquireYtdlpSlot();
+  try {
+    const url = await dedupeUrlExtraction(videoId, () => resolveYtdlpAudioUrl(ytdlpBin, args));
+    if (url) setCachedStreamUrl(videoId, url);
+    return url;
+  } finally {
+    release();
+  }
 }
 
 export async function streamViaYtdlp(
@@ -142,18 +174,42 @@ export async function streamViaYtdlp(
   args: string[],
   videoId: string
 ): Promise<boolean> {
-  let mediaUrl = getCachedStreamUrl(videoId);
-  if (!mediaUrl) {
-    mediaUrl = await resolveYtdlpAudioUrl(ytdlpBin, args);
-    if (!mediaUrl) return false;
-    setCachedStreamUrl(videoId, mediaUrl);
+  if (!tryAcquireStreamSlot()) {
+    if (!res.headersSent) {
+      res.status(503).json({ error: "Too many streams active. Try again shortly." });
+    }
+    return false;
   }
 
   const aborter = new AbortController();
-  req.on("close", () => aborter.abort());
-  res.on("error", () => aborter.abort());
+  let nodeStream: Readable | null = null;
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    aborter.abort();
+    try {
+      nodeStream?.destroy();
+    } catch {
+      /* ignore */
+    }
+    if (!res.writableEnded) {
+      try {
+        res.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  req.on("close", cleanup);
+  res.on("close", cleanup);
 
   try {
+    const mediaUrl = await getMediaUrl(ytdlpBin, args, videoId);
+    if (!mediaUrl) return false;
+
     const upstream = await fetch(mediaUrl, {
       signal: aborter.signal,
       redirect: "follow",
@@ -166,11 +222,20 @@ export async function streamViaYtdlp(
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Content-Type-Options", "nosniff");
 
-    const nodeStream = Readable.fromWeb(upstream.body as import("stream/web").ReadableStream);
-    await pipeline(nodeStream, res);
+    nodeStream = Readable.fromWeb(upstream.body as import("stream/web").ReadableStream);
+    nodeStream.on("error", cleanup);
+
+    await pipeline(nodeStream, res, { signal: aborter.signal });
+    cleaned = true;
     return true;
   } catch (err) {
-    console.error("[stream] Upstream stream failed:", (err as Error).message ?? err);
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ERR_STREAM_PREMATURE_CLOSE" && code !== "ABORT_ERR") {
+      console.error("[stream] Upstream failed:", (err as Error).message?.slice(0, 120) ?? err);
+    }
+    cleanup();
     return false;
+  } finally {
+    releaseStreamSlot();
   }
 }
