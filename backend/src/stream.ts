@@ -1,4 +1,4 @@
-import { spawn, execFileSync, type ChildProcess } from "child_process";
+import { spawn, execFile, type ChildProcess } from "child_process";
 import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -72,16 +72,63 @@ if (YT_USER_AGENT) {
  * Validate that yt-dlp binary exists and runs on this platform.
  * Call at startup so Render logs show immediately if something is wrong.
  */
-export function validateYtdlp(bin: string): { ok: boolean; version?: string; error?: string; cookies: boolean } {
-  try {
-    const out = execFileSync(bin, ["--version"], {
-      timeout: 15000,
-      encoding: "utf-8",
+export function validateYtdlp(bin: string): Promise<{ ok: boolean; version?: string; error?: string; cookies: boolean }> {
+  return new Promise((resolve) => {
+    execFile(bin, ["--version"], {
+      timeout: 45000,
       windowsHide: true,
-    }).trim();
-    return { ok: true, version: out, cookies: !!resolvedCookiePath };
+    }, (err, stdout, stderr) => {
+      if (err) {
+        resolve({ ok: false, error: err.message || String(err), cookies: !!resolvedCookiePath });
+      } else {
+        resolve({ ok: true, version: stdout.trim(), cookies: !!resolvedCookiePath });
+      }
+    });
+  });
+}
+
+/**
+ * Download the absolute latest release of yt-dlp on startup in the background.
+ * YouTube frequently changes its streaming formats, requiring latest updates.
+ */
+export async function autoUpdateYtdlp(dest: string): Promise<void> {
+  if (process.platform === "win32") {
+    console.log("[update] Auto-update skipped on Windows local machine to avoid EPERM file locks.");
+    return;
+  }
+  if (process.env.SKIP_YTDLP_UPDATE === "1") {
+    console.log("[update] Auto-update skipped (SKIP_YTDLP_UPDATE=1)");
+    return;
+  }
+  console.log("[update] Checking/updating to latest yt-dlp release in background...");
+  const YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+
+  try {
+    const res = await fetch(YTDLP_URL, {
+      signal: AbortSignal.timeout(120000),
+      redirect: "follow",
+    });
+    if (!res.ok) {
+      throw new Error(`Download failed: HTTP ${res.status} ${res.statusText}`);
+    }
+    if (!res.body) {
+      throw new Error("No response body received");
+    }
+
+    const { createWriteStream, chmodSync, renameSync } = await import("fs");
+    const { pipeline } = await import("stream/promises");
+    const { Readable } = await import("stream");
+
+    const tempDest = dest + ".tmp";
+    const fileStream = createWriteStream(tempDest);
+    const nodeStream = Readable.fromWeb(res.body as any);
+    await pipeline(nodeStream, fileStream);
+
+    chmodSync(tempDest, 0o755);
+    renameSync(tempDest, dest);
+    console.log(`[update] ✅ Successfully updated yt-dlp to latest version at ${dest}`);
   } catch (err: any) {
-    return { ok: false, error: err.message ?? String(err), cookies: !!resolvedCookiePath };
+    console.error("[update] ❌ Failed to auto-update yt-dlp:", err.message ?? err);
   }
 }
 
@@ -89,7 +136,8 @@ export function buildYtdlpArgs(
   videoUrl: string,
   format: string,
   startSec: number,
-  formatSectionTime: (s: number) => string
+  formatSectionTime: (s: number) => string,
+  useSpoofing: boolean = true
 ): string[] {
   const args = [
     "-f",
@@ -109,10 +157,12 @@ export function buildYtdlpArgs(
   }
 
   // ── Client spoofing — mimic official app to bypass datacenter blocks ──
-  args.push(
-    "--extractor-args",
-    "youtube:player-client=ios,web_creator"
-  );
+  if (useSpoofing) {
+    args.push(
+      "--extractor-args",
+      "youtube:player-client=ios,web_creator"
+    );
+  }
 
   // ── User-Agent — must match the browser the cookies were exported from ──
   if (YT_USER_AGENT) {

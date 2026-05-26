@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchLyrics } from "./lyrics.js";
-import { buildYtdlpArgs, initStreamingInstances, streamViaCobalt, streamViaInvidious, streamViaPiped, streamViaYtdlp, validateYtdlp } from "./stream.js";
+import { buildYtdlpArgs, initStreamingInstances, streamViaCobalt, streamViaInvidious, streamViaPiped, streamViaYtdlp, validateYtdlp, autoUpdateYtdlp } from "./stream.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LISTENING_FILE = join(__dirname, "../data/listening.json");
@@ -122,8 +122,8 @@ app.get("/favicon.ico", (_req, res) => {
 });
 
 // Health check with diagnostics
-app.get("/api/health", (_req, res) => {
-  const ytdlpStatus = validateYtdlp(YTDLP_BIN);
+app.get("/api/health", async (_req, res) => {
+  const ytdlpStatus = await validateYtdlp(YTDLP_BIN);
   res.json({
     status: "ok",
     timestamp: Date.now(),
@@ -255,10 +255,32 @@ app.get("/api/stream", async (req, res) => {
 
   try {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const ytdlpArgs = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime);
 
     // Layer 1: yt-dlp (needs cookies on cloud servers)
-    let ok = await streamViaYtdlp(req, res, YTDLP_BIN, ytdlpArgs);
+    // Permutation 1: Primary format with client spoofing (highly secure)
+    const args1 = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime, true);
+    let ok = await streamViaYtdlp(req, res, YTDLP_BIN, args1);
+
+    // Permutation 2: Primary format without client spoofing (fallback for restricted formats or local dev)
+    if (!ok && !res.headersSent) {
+      console.warn(`[stream] Primary spoofed format failed for ${videoId}. Retrying without client spoofing...`);
+      const args2 = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime, false);
+      ok = await streamViaYtdlp(req, res, YTDLP_BIN, args2);
+    }
+
+    // Permutation 3: Safe fallback format (best/b) with client spoofing
+    if (!ok && !res.headersSent) {
+      console.warn(`[stream] Primary non-spoofed format failed for ${videoId}. Retrying with best/b format and spoofing...`);
+      const args3 = buildYtdlpArgs(videoUrl, "best/b", startSec, formatSectionTime, true);
+      ok = await streamViaYtdlp(req, res, YTDLP_BIN, args3);
+    }
+
+    // Permutation 4: Safe fallback format (best/b) without client spoofing
+    if (!ok && !res.headersSent) {
+      console.warn(`[stream] Fallback spoofed format failed for ${videoId}. Retrying with best/b format and no spoofing...`);
+      const args4 = buildYtdlpArgs(videoUrl, "best/b", startSec, formatSectionTime, false);
+      ok = await streamViaYtdlp(req, res, YTDLP_BIN, args4);
+    }
 
     // Layer 2: Cobalt API (very reliable, no auth needed)
     if (!ok && !res.headersSent) {
@@ -328,21 +350,25 @@ app.listen(PORT, "0.0.0.0", async () => {
   console.log(`   Frontend redirect: ${FRONTEND_HOME ?? "(none)"}`);
   console.log(`   Allowed origins: ${corsAllowList.join(", ")}`);
 
-  // Validate yt-dlp at startup
-  const ytCheck = validateYtdlp(YTDLP_BIN);
-  if (ytCheck.ok) {
-    console.log(`   ✅ yt-dlp version: ${ytCheck.version}`);
-    console.log(`   ${ytCheck.cookies ? "✅ Cookies: loaded" : "⚠️  Cookies: NONE — bot-block likely on cloud"}`);
-    console.log(`   ${process.env.YT_USER_AGENT ? `✅ User-Agent: custom (${process.env.YT_USER_AGENT.slice(0, 40)}…)` : "⚠️  User-Agent: default — set YT_USER_AGENT to match your cookie browser"}`);
-    console.log(`   ✅ Extractor args: youtube:player-client=ios,web_creator`);
-  } else {
-    console.error(`   ❌ yt-dlp validation FAILED: ${ytCheck.error}`);
-    console.error(`      Streaming will fall back to Cobalt → Invidious → Piped`);
-  }
+  // Validate yt-dlp at startup asynchronously so slow CPU tiers don't experience blocking startup timeouts
+  validateYtdlp(YTDLP_BIN).then((ytCheck) => {
+    if (ytCheck.ok) {
+      console.log(`   ✅ yt-dlp version: ${ytCheck.version}`);
+      console.log(`   ${ytCheck.cookies ? "✅ Cookies: loaded" : "⚠️  Cookies: NONE — bot-block likely on cloud"}`);
+      console.log(`   ${process.env.YT_USER_AGENT ? `✅ User-Agent: custom (${process.env.YT_USER_AGENT.slice(0, 40)}…)` : "⚠️  User-Agent: default — set YT_USER_AGENT to match your cookie browser"}`);
+      console.log(`   ✅ Extractor args: youtube:player-client=ios,web_creator`);
+    } else {
+      console.error(`   ❌ yt-dlp validation FAILED: ${ytCheck.error}`);
+      console.error(`      Streaming will fall back to Cobalt → Invidious → Piped`);
+    }
+  });
 
   if (FRONTEND_HOME && /localhost|127\.0\.0\.1/i.test(FRONTEND_HOME)) {
     console.warn("   ⚠ FRONTEND_URL points at localhost — use your Vercel URL on Render");
   }
+
+  // Auto-update to the latest release of yt-dlp in the background on startup
+  autoUpdateYtdlp(YTDLP_BIN);
 
   // Populate dynamic instance lists in the background (non-blocking)
   await initStreamingInstances();
