@@ -241,7 +241,7 @@ app.get("/api/stream", async (req, res) => {
   try {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const ytdlpArgs = buildYtdlpArgs(videoUrl);
-    const ok = await streamViaYtdlp(req, res, YTDLP_BIN, ytdlpArgs);
+    const ok = await streamViaYtdlp(req, res, YTDLP_BIN, ytdlpArgs, videoId);
     if (!ok && !res.headersSent) {
       res.status(503).json({ error: "yt-dlp stream extraction failed." });
     }

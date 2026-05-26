@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import type { Request, Response } from "express";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
+import { getCachedStreamUrl, setCachedStreamUrl } from "./streamCache.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_YT_USER_AGENT =
@@ -138,10 +139,15 @@ export async function streamViaYtdlp(
   req: Request,
   res: Response,
   ytdlpBin: string,
-  args: string[]
+  args: string[],
+  videoId: string
 ): Promise<boolean> {
-  const mediaUrl = await resolveYtdlpAudioUrl(ytdlpBin, args);
-  if (!mediaUrl) return false;
+  let mediaUrl = getCachedStreamUrl(videoId);
+  if (!mediaUrl) {
+    mediaUrl = await resolveYtdlpAudioUrl(ytdlpBin, args);
+    if (!mediaUrl) return false;
+    setCachedStreamUrl(videoId, mediaUrl);
+  }
 
   const aborter = new AbortController();
   req.on("close", () => aborter.abort());

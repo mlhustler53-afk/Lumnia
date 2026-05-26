@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import type { Song, UserPlaylist, LuminaUser } from "@/types";
+import type { RepeatMode } from "@/lib/queue";
 
 export interface MusicContextType {
   currentSong: Song | null;
@@ -7,6 +8,7 @@ export interface MusicContextType {
   setIsPlaying: (playing: boolean) => void;
   playSong: (song: Song, customQueue?: Song[]) => void;
   playPlaylist: (playlist: UserPlaylist) => void;
+  openPlaylist: (playlistId: string) => void;
   togglePlay: () => void;
   favorites: Song[];
   toggleFavorite: (song: Song) => void;
@@ -19,8 +21,14 @@ export interface MusicContextType {
   error: string | null;
   clearError: () => void;
   queue: Song[];
-  skipToNext: () => void;
-  skipToPrevious: () => void;
+  currentSongIndex: number;
+  skipToNext: (countAsSkip?: boolean) => void;
+  skipToPrevious: (countAsSkip?: boolean) => void;
+  isShuffle: boolean;
+  setIsShuffle: (on: boolean) => void;
+  repeatMode: RepeatMode;
+  setRepeatMode: (mode: RepeatMode) => void;
+  cycleRepeatMode: () => void;
   lyrics: string;
   lyricsLoading: boolean;
   showLyrics: boolean;

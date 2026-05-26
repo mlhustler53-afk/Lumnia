@@ -16,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import type { Song } from "@/types";
+import type { RepeatMode } from "@/lib/queue";
 import { getApiBase } from "@/lib/api";
 
 const API_BASE = getApiBase();
@@ -41,8 +42,12 @@ interface MusicContextPlayer {
   togglePlay: () => void;
   toggleFavorite: (song: Song) => void;
   favorites: { id: string }[];
-  skipToNext: () => void;
-  skipToPrevious: () => void;
+  skipToNext: (countAsSkip?: boolean) => void;
+  skipToPrevious: (countAsSkip?: boolean) => void;
+  isShuffle: boolean;
+  setIsShuffle: (on: boolean) => void;
+  repeatMode: RepeatMode;
+  cycleRepeatMode: () => void;
   setShowLyrics: (show: boolean) => void;
   clearError: () => void;
 }
@@ -61,6 +66,10 @@ export function PlayerBar({ music }: PlayerBarProps) {
     favorites,
     skipToNext,
     skipToPrevious,
+    isShuffle,
+    setIsShuffle,
+    repeatMode,
+    cycleRepeatMode,
     setShowLyrics,
     clearError,
   } = music;
@@ -69,8 +78,6 @@ export function PlayerBar({ music }: PlayerBarProps) {
   const [totalDuration, setTotalDuration] = useState(0);
   const [isBuffering, setIsBuffering] = useState(false);
   const [volume, setVolume] = useState(70);
-  const [isShuffle, setIsShuffle] = useState(false);
-  const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("off");
   const [seekValue, setSeekValue] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -264,12 +271,12 @@ export function PlayerBar({ music }: PlayerBarProps) {
     setVolume(value[0]);
   };
 
-  const toggleRepeat = () => {
-    setRepeatMode((prev) => {
-      if (prev === "off") return "all";
-      if (prev === "all") return "one";
-      return "off";
-    });
+  const handlePrevious = () => {
+    if (displayTime > 3) {
+      seekTo(0);
+      return;
+    }
+    skipToPrevious(true);
   };
 
   const handleEnded = () => {
@@ -277,7 +284,7 @@ export function PlayerBar({ music }: PlayerBarProps) {
       seekTo(0);
       return;
     }
-    skipToNext();
+    skipToNext(false);
   };
 
   if (!currentSong) return null;
@@ -316,8 +323,8 @@ export function PlayerBar({ music }: PlayerBarProps) {
                         className="album-glow h-14 w-14 rounded-xl object-cover md:h-16 md:w-16"
                       />
                       {isBuffering && (
-                        <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/40">
-                          <Loader2 className="h-5 w-5 animate-spin text-white" />
+                        <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/50 backdrop-blur-sm">
+                          <div className="h-full w-full animate-pulse rounded-xl bg-white/10" />
                         </div>
                       )}
                     </div>
@@ -349,14 +356,15 @@ export function PlayerBar({ music }: PlayerBarProps) {
                         size="icon"
                         onClick={() => setIsShuffle(!isShuffle)}
                         className={cn("text-gray-400 hover:text-white", isShuffle && "text-violet-400")}
-                        title="Shuffle"
+                        title={isShuffle ? "Shuffle on" : "Shuffle off"}
+                        aria-pressed={isShuffle}
                       >
                         <Shuffle className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={skipToPrevious}
+                        onClick={handlePrevious}
                         className="text-gray-400 hover:text-white"
                         title="Previous track"
                       >
@@ -399,12 +407,19 @@ export function PlayerBar({ music }: PlayerBarProps) {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={toggleRepeat}
+                        onClick={cycleRepeatMode}
                         className={cn(
                           "relative text-gray-400 hover:text-white",
                           repeatMode !== "off" && "text-violet-400"
                         )}
-                        title="Repeat"
+                        title={
+                          repeatMode === "one"
+                            ? "Repeat one"
+                            : repeatMode === "all"
+                              ? "Repeat all"
+                              : "Repeat off"
+                        }
+                        aria-pressed={repeatMode !== "off"}
                       >
                         <Repeat className="h-4 w-4" />
                         {repeatMode === "one" && (
@@ -431,11 +446,11 @@ export function PlayerBar({ music }: PlayerBarProps) {
                     </div>
                   </div>
 
-                  <div className="hidden w-full items-center justify-end gap-4 md:flex md:w-1/4">
+                  <div className="flex w-full items-center justify-center gap-3 md:w-1/4 md:justify-end">
                     <Button
                       variant="ghost"
                       onClick={() => setShowLyrics(true)}
-                      className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground hover:text-white"
+                      className="hidden text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground hover:text-white sm:inline-flex"
                     >
                       Lyrics
                     </Button>
@@ -445,7 +460,7 @@ export function PlayerBar({ music }: PlayerBarProps) {
                       max={100}
                       step={1}
                       onValueChange={handleVolumeChange}
-                      className="w-24"
+                      className="w-20 sm:w-24"
                     />
                   </div>
                 </div>

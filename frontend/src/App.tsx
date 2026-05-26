@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Search as SearchIcon,
-  Music,
   Heart,
-  Loader2,
   AlertCircle,
   X,
   ListMusic,
@@ -29,12 +27,25 @@ import {
   getFavorites,
   saveFavorites,
   getPlaylists,
+  getPlaylistById,
   createPlaylist as createPlaylistLocal,
   deletePlaylist as deletePlaylistLocal,
   addSongToPlaylist as addSongLocal,
   removeSongFromPlaylist as removeSongLocal,
 } from "@/lib/localStore";
+import {
+  buildShuffledIndices,
+  dedupeSongs,
+  pickRandomFromPool,
+  resolveNextIndex,
+  resolvePreviousIndex,
+  type RepeatMode,
+} from "@/lib/queue";
+import { getRecentlyPlayed } from "@/lib/listeningHistory";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fetchHomeRecommendations, buildHomeMix } from "@/lib/recommendations";
+import { recordPlayStart, recordSkip, recordListenSeconds } from "@/lib/listeningHistory";
+import { SearchResultsSkeleton } from "@/components/skeletons/Skeletons";
 import {
   getSessionId,
   tickListeningSecond,
@@ -88,6 +99,8 @@ export default function App() {
   const [recommendations, setRecommendations] = useState<RecommendationSection[]>([]);
   const [homeMix, setHomeMix] = useState<Song[]>([]);
   const [recsLoading, setRecsLoading] = useState(true);
+  const lastHistorySongIdRef = useRef<string | null>(null);
+  const lastHistoryTickRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [queue, setQueue] = useState<Song[]>([]);
   const [currentSongIndex, setCurrentSongIndex] = useState(-1);
@@ -98,6 +111,13 @@ export default function App() {
   const [selectedPlaylist, setSelectedPlaylist] = useState<UserPlaylist | null>(null);
   const [createPlaylistOpen, setCreatePlaylistOpen] = useState(false);
   const [, setListenTick] = useState(0);
+  const [isShuffle, setIsShuffle] = useState(false);
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>("off");
+
+  const playHistoryRef = useRef<Song[]>([]);
+  const shuffledOrderRef = useRef<number[] | null>(null);
+  const recentPlayedIdsRef = useRef<string[]>([]);
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 400);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -111,8 +131,8 @@ export default function App() {
       const sections = await fetchHomeRecommendations(API_BASE);
       setRecommendations(sections);
       setHomeMix(buildHomeMix(sections));
-    } catch (err) {
-      console.error("Recommendations error:", err);
+    } catch {
+      setError("Could not load recommendations. Check your connection.");
     } finally {
       setRecsLoading(false);
     }
@@ -124,9 +144,36 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedPlaylist) return;
-    const updated = playlists.find((p) => p.id === selectedPlaylist.id);
+    const updated = getPlaylistById(selectedPlaylist.id);
     if (updated) setSelectedPlaylist(updated);
   }, [playlists, selectedPlaylist?.id]);
+
+  const shufflePool = useMemo(() => {
+    return dedupeSongs([
+      ...queue,
+      ...homeMix,
+      ...recommendations.flatMap((s) => s.songs),
+      ...favorites,
+      ...playlists.flatMap((p) => p.songs),
+      ...getRecentlyPlayed(24),
+    ]);
+  }, [queue, homeMix, recommendations, favorites, playlists]);
+
+  const openPlaylist = useCallback((playlistId: string) => {
+    const pl = getPlaylistById(playlistId);
+    if (!pl) return;
+    setSelectedPlaylist(pl);
+    setActiveView("playlist-detail");
+    setSearchResults([]);
+  }, []);
+
+  const cycleRepeatMode = useCallback(() => {
+    setRepeatMode((prev) => {
+      if (prev === "off") return "all";
+      if (prev === "all") return "one";
+      return "off";
+    });
+  }, []);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -149,6 +196,15 @@ export default function App() {
     const interval = setInterval(() => {
       tickListeningSecond();
       setListenTick((n) => n + 1);
+      const songId = lastHistorySongIdRef.current;
+      if (songId) {
+        const now = Date.now();
+        const elapsed = Math.floor((now - lastHistoryTickRef.current) / 1000);
+        if (elapsed > 0) {
+          recordListenSeconds(songId, elapsed);
+          lastHistoryTickRef.current = now;
+        }
+      }
     }, 1000);
     return () => clearInterval(interval);
   }, [isPlaying, user]);
@@ -177,21 +233,41 @@ export default function App() {
     setUser(null);
   };
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
+  const runSearch = useCallback(async (query: string) => {
+    const q = query.trim();
+    if (!q) {
+      setSearchResults([]);
+      return;
+    }
     setLoading(true);
-    setActiveView("home");
     try {
-      const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(searchQuery)}`);
+      const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`);
       if (!res.ok) throw new Error("Search failed");
       setSearchResults(await res.json());
     } catch {
       setError("Search failed. Make sure the backend is running.");
+      setSearchResults([]);
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    setActiveView("home");
+    await runSearch(searchQuery);
   };
+
+  useEffect(() => {
+    if (!debouncedSearchQuery.trim()) {
+      if (!searchQuery.trim()) setSearchResults([]);
+      return;
+    }
+    if (debouncedSearchQuery.trim().length < 2) return;
+    setActiveView("home");
+    void runSearch(debouncedSearchQuery);
+  }, [debouncedSearchQuery, runSearch, searchQuery]);
 
   const fetchLyrics = async (song: Song) => {
     setLyrics("");
@@ -209,44 +285,137 @@ export default function App() {
     }
   };
 
-  const playSong = (song: Song, customQueue?: Song[]) => {
-    const activeQueue = customQueue?.length ? customQueue : [song];
-    const index = activeQueue.findIndex((s) => s.id === song.id);
-    setQueue(activeQueue);
-    setCurrentSongIndex(index >= 0 ? index : 0);
-    setCurrentSong(song);
-    setIsPlaying(true);
-    setError(null);
-    fetchLyrics(song);
-  };
+  const startTrack = useCallback(
+    (song: Song, activeQueue: Song[], index: number, pushHistory: boolean) => {
+      if (pushHistory && currentSong && currentSong.id !== song.id) {
+        playHistoryRef.current.push(currentSong);
+        if (playHistoryRef.current.length > 50) playHistoryRef.current.shift();
+      }
+      setQueue(activeQueue);
+      setCurrentSongIndex(index);
+      setCurrentSong(song);
+      setIsPlaying(true);
+      setError(null);
+      recordPlayStart(song);
+      lastHistorySongIdRef.current = song.id;
+      lastHistoryTickRef.current = Date.now();
+      recentPlayedIdsRef.current = [
+        song.id,
+        ...recentPlayedIdsRef.current.filter((id) => id !== song.id),
+      ].slice(0, 10);
+      if (isShuffle && activeQueue.length > 1) {
+        shuffledOrderRef.current = buildShuffledIndices(activeQueue.length, index);
+      } else {
+        shuffledOrderRef.current = null;
+      }
+      fetchLyrics(song);
+    },
+    [currentSong, isShuffle]
+  );
 
-  const playPlaylist = (playlist: UserPlaylist) => {
-    if (playlist.songs.length === 0) {
-      setError("This playlist has no tracks yet.");
-      return;
+  const playSong = useCallback(
+    (song: Song, customQueue?: Song[]) => {
+      const activeQueue = customQueue?.length ? [...customQueue] : [song];
+      const index = activeQueue.findIndex((s) => s.id === song.id);
+      startTrack(song, activeQueue, index >= 0 ? index : 0, true);
+    },
+    [startTrack]
+  );
+
+  const playPlaylist = useCallback(
+    (playlist: UserPlaylist) => {
+      const fresh = getPlaylistById(playlist.id) ?? playlist;
+      if (fresh.songs.length === 0) {
+        setError("This playlist has no tracks yet.");
+        return;
+      }
+      playSong(fresh.songs[0], fresh.songs);
+    },
+    [playSong]
+  );
+
+  const skipToNext = useCallback(
+    (countAsSkip = true) => {
+      if (queue.length === 0 || currentSongIndex === -1) return;
+      if (countAsSkip && currentSong) recordSkip(currentSong);
+
+      if (currentSong) {
+        playHistoryRef.current.push(currentSong);
+        if (playHistoryRef.current.length > 50) playHistoryRef.current.shift();
+      }
+
+      let nextIndex = resolveNextIndex(
+        currentSongIndex,
+        queue.length,
+        repeatMode,
+        isShuffle,
+        shuffledOrderRef.current
+      );
+
+      let activeQueue = queue;
+
+      if (nextIndex === null && isShuffle && shufflePool.length > 0) {
+        const avoid = new Set(recentPlayedIdsRef.current);
+        if (currentSong) avoid.add(currentSong.id);
+        const random = pickRandomFromPool(shufflePool, avoid);
+        if (random) {
+          if (!activeQueue.some((s) => s.id === random.id)) {
+            activeQueue = [...activeQueue, random];
+            setQueue(activeQueue);
+          }
+          nextIndex = activeQueue.findIndex((s) => s.id === random.id);
+        }
+      }
+
+      if (nextIndex === null || nextIndex < 0) {
+        setIsPlaying(false);
+        return;
+      }
+
+      const nextSong = activeQueue[nextIndex];
+      startTrack(nextSong, activeQueue, nextIndex, false);
+    },
+    [queue, currentSongIndex, currentSong, repeatMode, isShuffle, shufflePool, startTrack]
+  );
+
+  const skipToPrevious = useCallback(
+    (countAsSkip = true) => {
+      if (queue.length === 0 || currentSongIndex === -1) return;
+
+      if (playHistoryRef.current.length > 0) {
+        if (countAsSkip && currentSong) recordSkip(currentSong);
+        const prev = playHistoryRef.current.pop()!;
+        let activeQueue = queue;
+        let idx = activeQueue.findIndex((s) => s.id === prev.id);
+        if (idx < 0) {
+          activeQueue = [prev, ...activeQueue];
+          setQueue(activeQueue);
+          idx = 0;
+        }
+        startTrack(prev, activeQueue, idx, false);
+        return;
+      }
+
+      if (countAsSkip && currentSong) recordSkip(currentSong);
+      const prevIndex = resolvePreviousIndex(
+        currentSongIndex,
+        queue.length,
+        isShuffle,
+        shuffledOrderRef.current
+      );
+      if (prevIndex === null) return;
+      startTrack(queue[prevIndex], queue, prevIndex, false);
+    },
+    [queue, currentSongIndex, currentSong, isShuffle, startTrack]
+  );
+
+  useEffect(() => {
+    if (isShuffle && queue.length > 1 && currentSongIndex >= 0) {
+      shuffledOrderRef.current = buildShuffledIndices(queue.length, currentSongIndex);
+    } else if (!isShuffle) {
+      shuffledOrderRef.current = null;
     }
-    playSong(playlist.songs[0], playlist.songs);
-  };
-
-  const skipToNext = useCallback(() => {
-    if (queue.length === 0 || currentSongIndex === -1) return;
-    const nextIndex = (currentSongIndex + 1) % queue.length;
-    setCurrentSongIndex(nextIndex);
-    const nextSong = queue[nextIndex];
-    setCurrentSong(nextSong);
-    setIsPlaying(true);
-    fetchLyrics(nextSong);
-  }, [queue, currentSongIndex]);
-
-  const skipToPrevious = useCallback(() => {
-    if (queue.length === 0 || currentSongIndex === -1) return;
-    const prevIndex = (currentSongIndex - 1 + queue.length) % queue.length;
-    setCurrentSongIndex(prevIndex);
-    const prevSong = queue[prevIndex];
-    setCurrentSong(prevSong);
-    setIsPlaying(true);
-    fetchLyrics(prevSong);
-  }, [queue, currentSongIndex]);
+  }, [isShuffle, queue.length, currentSongIndex]);
 
   const togglePlay = () => setIsPlaying((prev) => !prev);
 
@@ -334,6 +503,7 @@ export default function App() {
         setIsPlaying,
         playSong,
         playPlaylist,
+        openPlaylist,
         togglePlay,
         favorites,
         toggleFavorite,
@@ -342,6 +512,10 @@ export default function App() {
         deletePlaylist: async (id) => {
           deletePlaylistLocal(id);
           refreshPlaylists();
+          if (selectedPlaylist?.id === id) {
+            setSelectedPlaylist(null);
+            setActiveView("playlists");
+          }
         },
         addSongToPlaylist: handleAddToPlaylist,
         removeSongFromPlaylist: handleRemoveFromPlaylist,
@@ -349,8 +523,14 @@ export default function App() {
         error,
         clearError,
         queue,
+        currentSongIndex,
         skipToNext,
         skipToPrevious,
+        isShuffle,
+        setIsShuffle,
+        repeatMode,
+        setRepeatMode,
+        cycleRepeatMode,
         lyrics,
         lyricsLoading,
         showLyrics,
@@ -434,10 +614,7 @@ export default function App() {
 
           <main className="flex-1 px-8 py-6 pb-36 md:px-12">
             {loading ? (
-              <div className="flex flex-col items-center justify-center pt-20">
-                <Loader2 className="h-8 w-8 animate-spin text-white/40" />
-                <p className="mt-4 text-white/40">Searching…</p>
-              </div>
+              <SearchResultsSkeleton />
             ) : searchResults.length > 0 ? (
               <section>
                 <h2 className="mb-8 text-3xl font-bold tracking-tight">Search Results</h2>
@@ -450,7 +627,10 @@ export default function App() {
             ) : activeView === "playlist-detail" && selectedPlaylist ? (
               <PlaylistDetailView
                 playlist={selectedPlaylist}
-                onBack={() => setActiveView("home")}
+                onBack={() => {
+                  setActiveView("playlists");
+                  setSelectedPlaylist(null);
+                }}
                 onPlayAll={() => playPlaylist(selectedPlaylist)}
                 onDelete={handleDeletePlaylist}
               />
@@ -466,7 +646,11 @@ export default function App() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-white/40">Like songs with the heart icon to see them here.</p>
+                  <div className="glass rounded-3xl border border-dashed border-white/10 py-16 text-center">
+                    <Heart className="mx-auto mb-3 h-10 w-10 text-indigo-500/40" />
+                    <p className="text-white/50">No favorites yet</p>
+                    <p className="mt-1 text-sm text-white/35">Tap the heart on any track to save it here</p>
+                  </div>
                 )}
               </section>
             ) : activeView === "listening" ? (
@@ -494,10 +678,7 @@ export default function App() {
                     {playlists.map((pl) => (
                       <button
                         key={pl.id}
-                        onClick={() => {
-                          setSelectedPlaylist(pl);
-                          setActiveView("playlist-detail");
-                        }}
+                        onClick={() => openPlaylist(pl.id)}
                         className="w-full text-left"
                       >
                         <div className="glass group cursor-pointer rounded-3xl p-4 transition-all hover:bg-white/[0.08]">
@@ -517,7 +698,11 @@ export default function App() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-white/40">Create a playlist to collect your favorite tracks.</p>
+                  <div className="glass rounded-3xl border border-dashed border-white/10 py-16 text-center">
+                    <ListMusic className="mx-auto mb-3 h-10 w-10 text-violet-400/40" />
+                    <p className="text-white/50">No playlists yet</p>
+                    <p className="mt-1 text-sm text-white/35">Create one to organize your music</p>
+                  </div>
                 )}
               </section>
             ) : (
@@ -531,10 +716,7 @@ export default function App() {
                 loading={recsLoading}
                 onRefresh={loadRecommendations}
                 onPlayMix={() => homeMix.length > 0 && playSong(homeMix[0], homeMix)}
-                onOpenPlaylist={(pl) => {
-                  setSelectedPlaylist(pl);
-                  setActiveView("playlist-detail");
-                }}
+                onOpenPlaylist={(pl) => openPlaylist(pl.id)}
                 onPlayPlaylist={playPlaylist}
                 onCreatePlaylist={() => setCreatePlaylistOpen(true)}
               />
@@ -553,6 +735,10 @@ export default function App() {
           favorites,
           skipToNext,
           skipToPrevious,
+          isShuffle,
+          setIsShuffle,
+          repeatMode,
+          cycleRepeatMode,
           setShowLyrics,
           clearError,
         }}

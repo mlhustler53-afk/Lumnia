@@ -44,6 +44,10 @@ export function getPlaylists(): UserPlaylist[] {
   return readJson<UserPlaylist[]>(KEYS.playlists, []);
 }
 
+export function getPlaylistById(playlistId: string): UserPlaylist | undefined {
+  return getPlaylists().find((p) => p.id === playlistId);
+}
+
 export function savePlaylists(playlists: UserPlaylist[]) {
   writeJson(KEYS.playlists, playlists);
 }

@@ -1,11 +1,16 @@
 import { motion } from "motion/react";
-import { Sparkles, Play, RefreshCw, Loader2 } from "lucide-react";
+import { Sparkles, Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { RecommendationSection, Song, UserPlaylist } from "@/types";
 import { SongCard } from "@/components/SongCard";
 import { PlaylistCard } from "@/components/playlists/PlaylistCard";
 import { ListeningTimePanel } from "@/components/ListeningTimePanel";
 import { Logo } from "@/components/Logo";
+import {
+  HomeHeroSkeleton,
+  PlaylistCardSkeletonGrid,
+  RecommendationSectionSkeleton,
+} from "@/components/skeletons/Skeletons";
 
 interface HomeViewProps {
   userName: string;
@@ -15,6 +20,7 @@ interface HomeViewProps {
   playlists: UserPlaylist[];
   homeMix: Song[];
   loading: boolean;
+  playlistsLoading?: boolean;
   onRefresh: () => void;
   onPlayMix: () => void;
   onOpenPlaylist: (playlist: UserPlaylist) => void;
@@ -30,6 +36,7 @@ export function HomeView({
   playlists,
   homeMix,
   loading,
+  playlistsLoading = false,
   onRefresh,
   onPlayMix,
   onOpenPlaylist,
@@ -37,67 +44,68 @@ export function HomeView({
   onCreatePlaylist,
 }: HomeViewProps) {
   const greeting = getGreeting();
+  const showRecsSkeleton = loading && sections.every((s) => s.songs.length === 0);
 
   return (
     <div className="space-y-14">
-      <section className="relative overflow-hidden rounded-[40px] border border-violet-500/20 bg-gradient-to-br from-violet-950/80 via-black/60 to-fuchsia-950/50 p-8 md:p-12">
-        <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-violet-500/20 blur-3xl" />
-        <div className="absolute -bottom-16 -left-16 h-48 w-48 rounded-full bg-fuchsia-500/15 blur-3xl" />
-        <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
-          <div className="max-w-xl space-y-4">
-            <div className="flex items-center gap-3">
-              <Logo size="sm" />
-              <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-violet-300/80">
-                <Sparkles className="h-4 w-4" />
-                Lumina · For you
+      {loading && homeMix.length === 0 ? (
+        <HomeHeroSkeleton />
+      ) : (
+        <section className="relative overflow-hidden rounded-[40px] border border-violet-500/20 bg-gradient-to-br from-violet-950/80 via-black/60 to-fuchsia-950/50 p-8 md:p-12">
+          <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-violet-500/20 blur-3xl" />
+          <div className="absolute -bottom-16 -left-16 h-48 w-48 rounded-full bg-fuchsia-500/15 blur-3xl" />
+          <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+            <div className="max-w-xl space-y-4">
+              <div className="flex items-center gap-3">
+                <Logo size="sm" />
+                <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-violet-300/80">
+                  <Sparkles className="h-4 w-4" />
+                  Lumina · For you
+                </p>
+              </div>
+              <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">
+                {greeting}, {userName.split(" ")[0]}
+              </h1>
+              <p className="font-serif italic text-lg text-white/50">
+                {homeMix.length > 0
+                  ? `Your daily mix has ${homeMix.length} hand-picked tracks across ${sections.filter((s) => s.songs.length > 0).length} moods.`
+                  : "Curating your recommendations…"}
               </p>
+              <div className="flex flex-wrap gap-3 pt-2">
+                <Button
+                  onClick={onPlayMix}
+                  disabled={homeMix.length === 0 || loading}
+                  className="rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 px-8 shadow-lg shadow-violet-500/30 hover:from-violet-600 hover:to-fuchsia-600"
+                >
+                  <Play className="ml-0.5 h-4 w-4" />
+                  Play Daily Mix
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={onRefresh}
+                  disabled={loading}
+                  className="rounded-full border-violet-500/30 bg-black/30 text-violet-200 hover:bg-violet-500/10"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
+              </div>
             </div>
-            <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">
-              {greeting}, {userName.split(" ")[0]}
-            </h1>
-            <p className="font-serif italic text-lg text-white/50">
-              {homeMix.length > 0
-                ? `Your daily mix has ${homeMix.length} hand-picked tracks across ${sections.filter((s) => s.songs.length > 0).length} moods.`
-                : "Curating your recommendations…"}
-            </p>
-            <div className="flex flex-wrap gap-3 pt-2">
-              <Button
-                onClick={onPlayMix}
-                disabled={homeMix.length === 0 || loading}
-                className="rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 px-8 shadow-lg shadow-violet-500/30 hover:from-violet-600 hover:to-fuchsia-600"
-              >
-                <Play className="ml-0.5 h-4 w-4" />
-                Play Daily Mix
-              </Button>
-              <Button
-                variant="outline"
-                onClick={onRefresh}
-                disabled={loading}
-                className="rounded-full border-violet-500/30 bg-black/30 text-violet-200 hover:bg-violet-500/10"
-              >
-                {loading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-                Refresh
-              </Button>
-            </div>
+            {homeMix.length > 0 && (
+              <div className="flex -space-x-3">
+                {homeMix.slice(0, 4).map((song) => (
+                  <img
+                    key={song.id}
+                    src={song.thumbnail}
+                    alt=""
+                    className="h-16 w-16 rounded-2xl border-2 border-black/50 object-cover shadow-xl md:h-20 md:w-20"
+                  />
+                ))}
+              </div>
+            )}
           </div>
-          {homeMix.length > 0 && (
-            <div className="flex -space-x-3">
-              {homeMix.slice(0, 4).map((song) => (
-                <img
-                  key={song.id}
-                  src={song.thumbnail}
-                  alt=""
-                  className="h-16 w-16 rounded-2xl border-2 border-black/50 object-cover shadow-xl md:h-20 md:w-20"
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
+        </section>
+      )}
 
       <ListeningTimePanel
         currentUserName={userName}
@@ -117,7 +125,9 @@ export function HomeView({
             + New playlist
           </Button>
         </div>
-        {playlists.length > 0 ? (
+        {playlistsLoading ? (
+          <PlaylistCardSkeletonGrid count={5} />
+        ) : playlists.length > 0 ? (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {playlists.map((playlist) => (
               <PlaylistCard
@@ -139,11 +149,12 @@ export function HomeView({
         )}
       </section>
 
-      {loading && sections.every((s) => s.songs.length === 0) ? (
-        <div className="flex flex-col items-center justify-center py-20">
-          <Loader2 className="h-8 w-8 animate-spin text-violet-400/60" />
-          <p className="mt-4 text-white/40">Loading recommendations…</p>
-        </div>
+      {showRecsSkeleton ? (
+        <>
+          <RecommendationSectionSkeleton />
+          <RecommendationSectionSkeleton />
+          <RecommendationSectionSkeleton />
+        </>
       ) : (
         sections.map((section) =>
           section.songs.length > 0 ? (
