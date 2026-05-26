@@ -16,7 +16,7 @@ import { AmbientCanvas } from "@/components/AmbientCanvas";
 import { PlayerBar } from "@/components/player/PlayerBar";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { AnnouncementScreen } from "@/components/AnnouncementScreen";
-import { acknowledgeAnnouncement, shouldShowAnnouncement } from "@/lib/announcement";
+import { isAnnouncementBlocking } from "@/lib/announcement";
 import { MusicContext } from "@/context/MusicContext";
 import { HomeView } from "@/components/home/HomeView";
 import { PlaylistDetailView } from "@/components/playlists/PlaylistDetailView";
@@ -87,7 +87,6 @@ function Toast({ message, onClose }: { message: string; onClose: () => void }) {
 }
 
 export default function App() {
-  const [showAnnouncement, setShowAnnouncement] = useState(() => shouldShowAnnouncement());
   const [user, setUser] = useState<LuminaUser | null>(() => {
     const name = getUserName();
     return name ? { name } : null;
@@ -458,15 +457,8 @@ export default function App() {
     setSelectedPlaylist(null);
   };
 
-  if (showAnnouncement) {
-    return (
-      <AnnouncementScreen
-        onContinue={() => {
-          acknowledgeAnnouncement();
-          setShowAnnouncement(false);
-        }}
-      />
-    );
+  if (isAnnouncementBlocking()) {
+    return <AnnouncementScreen />;
   }
 
   if (!user) {

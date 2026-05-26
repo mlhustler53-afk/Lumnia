@@ -1,11 +1,6 @@
 import { motion } from "motion/react";
 import { CheckCircle2, Server, Radio } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
-
-interface AnnouncementScreenProps {
-  onContinue: () => void;
-}
 
 const ANNOUNCEMENT_LINES = [
   "SYSTEM LEVEL: v1.0.0 Live Deployment Complete",
@@ -16,7 +11,7 @@ const ANNOUNCEMENT_LINES = [
   "Database sync is currently running at 100% efficiency. More modules dropping soon.",
 ] as const;
 
-export function AnnouncementScreen({ onContinue }: AnnouncementScreenProps) {
+export function AnnouncementScreen() {
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#030305] p-4 sm:p-8">
       <div className="gradient-bg opacity-90" />
@@ -52,7 +47,7 @@ export function AnnouncementScreen({ onContinue }: AnnouncementScreenProps) {
               line === "" ? (
                 <div key={i} className="h-3" />
               ) : (
-                <p key={i} className={line.startsWith("STATUS") ? "text-emerald-400 font-semibold" : ""}>
+                <p key={i} className={line.startsWith("STATUS") ? "font-semibold text-emerald-400" : ""}>
                   {line}
                 </p>
               )
@@ -87,18 +82,6 @@ export function AnnouncementScreen({ onContinue }: AnnouncementScreenProps) {
             </div>
           </div>
         </div>
-
-        <p className="mt-6 text-center text-sm text-white/45">
-          This notice stays until you continue — it will not auto-close.
-        </p>
-
-        <Button
-          type="button"
-          onClick={onContinue}
-          className="mt-6 h-12 w-full rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-500 text-base font-bold shadow-lg shadow-violet-500/30 hover:from-violet-600 hover:to-fuchsia-600"
-        >
-          Continue to Lumina
-        </Button>
       </motion.div>
     </div>
   );
