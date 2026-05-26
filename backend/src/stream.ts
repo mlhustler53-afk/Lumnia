@@ -14,15 +14,33 @@ const BOT_ERROR_RE = /not a bot|LOGIN_REQUIRED|Sign in to confirm|bot detection/
 // ──────────────────────────────────────────────
 let resolvedCookiePath: string | null = null;
 
+// Default User-Agent — can be overridden via YT_USER_AGENT env var to match
+// the exact browser the cookies were exported from.
+const YT_USER_AGENT: string | null = process.env.YT_USER_AGENT?.trim() || null;
+
 function setupCookies(): string | null {
-  // 1. Explicit file path
+  // 1. Render Secret File — uploaded via Render's "Secret Files" feature
+  const renderSecretPath = "/opt/render/project/src/youtube-cookies.txt";
+  if (existsSync(renderSecretPath)) {
+    console.log(`[cookies] Using Render secret file: ${renderSecretPath}`);
+    return renderSecretPath;
+  }
+
+  // 2. cookies.txt next to the running process (works on any platform)
+  const cwdCookiePath = join(process.cwd(), "cookies.txt");
+  if (existsSync(cwdCookiePath)) {
+    console.log(`[cookies] Using cwd cookie file: ${cwdCookiePath}`);
+    return cwdCookiePath;
+  }
+
+  // 3. Explicit file path from env
   const fromFile = process.env.YTDLP_COOKIES?.trim();
   if (fromFile && existsSync(fromFile)) {
     console.log(`[cookies] Using cookie file: ${fromFile}`);
     return fromFile;
   }
 
-  // 2. Base64-encoded cookie string → decode to a temp file
+  // 4. Base64-encoded cookie string → decode to a temp file
   const fromBase64 = process.env.YTDLP_COOKIES_BASE64?.trim();
   if (fromBase64) {
     try {
@@ -41,10 +59,14 @@ function setupCookies(): string | null {
     }
   }
 
+  console.warn("[cookies] No cookie file found — yt-dlp may get bot-blocked on cloud servers");
   return null;
 }
 
 resolvedCookiePath = setupCookies();
+if (YT_USER_AGENT) {
+  console.log(`[cookies] Custom User-Agent: ${YT_USER_AGENT.slice(0, 60)}…`);
+}
 
 /**
  * Validate that yt-dlp binary exists and runs on this platform.
@@ -81,9 +103,20 @@ export function buildYtdlpArgs(
     "--no-check-certificates",
   ];
 
-  // Use cookies if available (critical for cloud deployments)
+  // ── Cookie auth (critical for cloud deployments) ──────────────
   if (resolvedCookiePath && existsSync(resolvedCookiePath)) {
     args.push("--cookies", resolvedCookiePath);
+  }
+
+  // ── Client spoofing — mimic official app to bypass datacenter blocks ──
+  args.push(
+    "--extractor-args",
+    "youtube:player-client=ios,web_creator"
+  );
+
+  // ── User-Agent — must match the browser the cookies were exported from ──
+  if (YT_USER_AGENT) {
+    args.push("--user-agent", YT_USER_AGENT);
   }
 
   if (startSec > 0) {

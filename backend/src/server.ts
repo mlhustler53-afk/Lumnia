@@ -332,6 +332,9 @@ app.listen(PORT, "0.0.0.0", async () => {
   const ytCheck = validateYtdlp(YTDLP_BIN);
   if (ytCheck.ok) {
     console.log(`   ✅ yt-dlp version: ${ytCheck.version}`);
+    console.log(`   ${ytCheck.cookies ? "✅ Cookies: loaded" : "⚠️  Cookies: NONE — bot-block likely on cloud"}`);
+    console.log(`   ${process.env.YT_USER_AGENT ? `✅ User-Agent: custom (${process.env.YT_USER_AGENT.slice(0, 40)}…)` : "⚠️  User-Agent: default — set YT_USER_AGENT to match your cookie browser"}`);
+    console.log(`   ✅ Extractor args: youtube:player-client=ios,web_creator`);
   } else {
     console.error(`   ❌ yt-dlp validation FAILED: ${ytCheck.error}`);
     console.error(`      Streaming will fall back to Cobalt → Invidious → Piped`);
