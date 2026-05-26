@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchLyrics } from "./lyrics.js";
-import { buildYtdlpArgs, initStreamingInstances, streamViaCobalt, streamViaInvidious, streamViaPiped, streamViaYtdlp, validateYtdlp, autoUpdateYtdlp } from "./stream.js";
+import { buildYtdlpArgs, streamViaYtdlp, validateYtdlp, autoUpdateYtdlp } from "./stream.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LISTENING_FILE = join(__dirname, "../data/listening.json");
@@ -203,17 +203,6 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
-function formatSectionTime(totalSeconds: number): string {
-  const sec = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0) {
-    return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  }
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
 /** Resolve yt-dlp: env → backend dir (from build) → cwd → PATH. */
 function resolveYtDlp(): string {
   const fromEnv = process.env.YTDLP_PATH?.trim();
@@ -237,12 +226,10 @@ function resolveYtDlp(): string {
 }
 
 const YTDLP_BIN = resolveYtDlp();
-// Prefer formats that don't require ffmpeg post-processing
-const YTDLP_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best";
 
 // ──────────────────────────────────────────────
 // API: Stream audio from YouTube (proxy via yt-dlp)
-// Optional ?t=seconds to start playback from a position
+// Minimal, single-path yt-dlp extraction flow
 // ──────────────────────────────────────────────
 app.get("/api/stream", async (req, res) => {
   const videoId = req.query.id as string;
@@ -251,61 +238,12 @@ app.get("/api/stream", async (req, res) => {
     return;
   }
 
-  const startSec = Math.max(0, parseInt(req.query.t as string, 10) || 0);
-
   try {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    // Layer 1: yt-dlp (needs cookies on cloud servers)
-    // Permutation 1: Primary format with client spoofing (highly secure)
-    const args1 = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime, true);
-    let ok = await streamViaYtdlp(req, res, YTDLP_BIN, args1);
-
-    // Permutation 2: Primary format without client spoofing (fallback for restricted formats or local dev)
+    const ytdlpArgs = buildYtdlpArgs(videoUrl);
+    const ok = await streamViaYtdlp(req, res, YTDLP_BIN, ytdlpArgs);
     if (!ok && !res.headersSent) {
-      console.warn(`[stream] Primary spoofed format failed for ${videoId}. Retrying without client spoofing...`);
-      const args2 = buildYtdlpArgs(videoUrl, YTDLP_FORMAT, startSec, formatSectionTime, false);
-      ok = await streamViaYtdlp(req, res, YTDLP_BIN, args2);
-    }
-
-    // Permutation 3: Safe fallback format (best/b) with client spoofing
-    if (!ok && !res.headersSent) {
-      console.warn(`[stream] Primary non-spoofed format failed for ${videoId}. Retrying with best/b format and spoofing...`);
-      const args3 = buildYtdlpArgs(videoUrl, "best/b", startSec, formatSectionTime, true);
-      ok = await streamViaYtdlp(req, res, YTDLP_BIN, args3);
-    }
-
-    // Permutation 4: Safe fallback format (best/b) without client spoofing
-    if (!ok && !res.headersSent) {
-      console.warn(`[stream] Fallback spoofed format failed for ${videoId}. Retrying with best/b format and no spoofing...`);
-      const args4 = buildYtdlpArgs(videoUrl, "best/b", startSec, formatSectionTime, false);
-      ok = await streamViaYtdlp(req, res, YTDLP_BIN, args4);
-    }
-
-    // Layer 2: Cobalt API (very reliable, no auth needed)
-    if (!ok && !res.headersSent) {
-      console.warn(`[stream] yt-dlp failed for ${videoId}, trying Cobalt fallback`);
-      ok = await streamViaCobalt(req, res, videoId);
-    }
-
-    // Layer 3: Invidious API
-    if (!ok && !res.headersSent) {
-      console.warn(`[stream] Cobalt failed for ${videoId}, trying Invidious fallback`);
-      ok = await streamViaInvidious(req, res, videoId);
-    }
-
-    // Layer 4: Piped API
-    if (!ok && !res.headersSent) {
-      console.warn(`[stream] Invidious failed for ${videoId}, trying Piped fallback`);
-      ok = await streamViaPiped(req, res, videoId);
-    }
-
-    if (!ok && !res.headersSent) {
-      res.status(503).json({
-        error:
-          "All streaming methods failed (yt-dlp, Cobalt, Invidious, Piped).",
-        hint: "Try setting YTDLP_COOKIES_BASE64 env var, or set COBALT_API_URL to a working Cobalt instance.",
-      });
+      res.status(503).json({ error: "yt-dlp stream extraction failed." });
     }
   } catch (error) {
     console.error("Stream initialization error:", error);
@@ -356,10 +294,9 @@ app.listen(PORT, "0.0.0.0", async () => {
       console.log(`   ✅ yt-dlp version: ${ytCheck.version}`);
       console.log(`   ${ytCheck.cookies ? "✅ Cookies: loaded" : "⚠️  Cookies: NONE — bot-block likely on cloud"}`);
       console.log(`   ${process.env.YT_USER_AGENT ? `✅ User-Agent: custom (${process.env.YT_USER_AGENT.slice(0, 40)}…)` : "⚠️  User-Agent: default — set YT_USER_AGENT to match your cookie browser"}`);
-      console.log(`   ✅ Extractor args: youtube:player-client=ios,web_creator`);
     } else {
       console.error(`   ❌ yt-dlp validation FAILED: ${ytCheck.error}`);
-      console.error(`      Streaming will fall back to Cobalt → Invidious → Piped`);
+      console.error("      Streaming endpoint will fail until yt-dlp works locally");
     }
   });
 
@@ -370,6 +307,4 @@ app.listen(PORT, "0.0.0.0", async () => {
   // Auto-update to the latest release of yt-dlp in the background on startup
   autoUpdateYtdlp(YTDLP_BIN);
 
-  // Populate dynamic instance lists in the background (non-blocking)
-  await initStreamingInstances();
 });

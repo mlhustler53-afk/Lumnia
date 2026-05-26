@@ -17,13 +17,11 @@ if (process.env.SKIP_YTDLP_INSTALL === "1") {
 }
 
 if (existsSync(dest)) {
-  const stats = statSync(dest);
-  if (stats.size > 0) {
-    console.log("[ensure-ytdlp] Already installed at", dest);
-    process.exit(0);
-  } else {
-    console.log("[ensure-ytdlp] Found empty yt-dlp file, removing and re-downloading...");
+  console.log("[ensure-ytdlp] Binary exists at", dest, "- downloading latest to ensure it is up to date.");
+  try {
     unlinkSync(dest);
+  } catch {
+    /* ignore locks in local dev if they happen, though build normally runs offline/pre-run */
   }
 }
 
@@ -54,7 +52,11 @@ try {
   const finalStats = statSync(dest);
   console.log(`[ensure-ytdlp] Ready (${(finalStats.size / 1024 / 1024).toFixed(1)} MB)`);
 } catch (err) {
-  console.error("[ensure-ytdlp] Failed to download:", err);
+  console.error("[ensure-ytdlp] Failed to download:", err.message ?? err);
+  if (existsSync(dest) && statSync(dest).size > 0) {
+    console.log("[ensure-ytdlp] ⚠️  Using existing local binary (possibly locked by a running server or offline build).");
+    process.exit(0);
+  }
   // Clean up partial downloads
   try { if (existsSync(dest)) unlinkSync(dest); } catch { /* ignore */ }
   process.exit(1);
